@@ -1,72 +1,47 @@
 // components/CalendarView.tsx
 
-import React, { useMemo, useCallback } from "react";
-import { View, Text, StyleSheet, TouchableOpacity } from "react-native";
-import { Agenda, AgendaEntry } from "react-native-calendars";
+import React, { useCallback } from "react";
+import {
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  FlatList,
+} from "react-native";
+import { Calendar, DateData } from "react-native-calendars";
 import { LessonEvent } from "../lib/types";
 
-// 创建一个安全的、包含所有信息的日程条目类型
-interface CustomAgendaEntry extends AgendaEntry, LessonEvent {}
-
-interface AgendaItems {
-  [date: string]: CustomAgendaEntry[];
-}
-
 type Props = {
-  // prop 改回接收原始的 events 数组
   events: LessonEvent[];
+  markedDates: { [key: string]: { marked: true; dotColor: string } };
+  selectedDate: string;
+  onDayPress: (day: DateData) => void;
   onEventClick: (event: LessonEvent) => void;
 };
 
-export default function CalendarView({ events = [], onEventClick }: Props) {
-  const selectedDate = useMemo(() => {
-    return new Date().toISOString().split("T")[0];
-  }, []);
-
-  // 数据转换逻辑在这里，并使用 useMemo 保证稳定
-  const agendaItems: AgendaItems = useMemo(() => {
-    const items: AgendaItems = {};
-
-    events.forEach((event) => {
-      const dateKey = event.start.split("T")[0];
-      if (!items[dateKey]) {
-        items[dateKey] = [];
-      }
-      // 安全地创建 CustomAgendaEntry
-      items[dateKey].push({
-        ...event,
-        name: event.extendedProps.studentName,
-        height: 80,
-        day: event.start,
-      });
-    });
-
-    // 关键！如果最终的 items 对象是空的，为 "selectedDate" (今天) 添加一个空数组
-    // 这可以规避 Agenda 组件在 items 为完全空对象时的 Bug
-    if (Object.keys(items).length === 0) {
-      items[selectedDate] = [];
-    }
-
-    return items;
-  }, [events, selectedDate]); // 依赖于 events 和 selectedDate
-
+export default function CalendarView({
+  events,
+  markedDates,
+  selectedDate,
+  onDayPress,
+  onEventClick,
+}: Props) {
   const renderItem = useCallback(
-    (item: AgendaEntry) => {
-      const lesson = item as LessonEvent;
+    ({ item }: { item: LessonEvent }) => {
       return (
         <TouchableOpacity
           style={styles.itemContainer}
-          onPress={() => onEventClick(lesson)}
+          onPress={() => onEventClick(item)}
         >
-          <Text style={styles.itemTitle}>{lesson.title}</Text>
-          <Text>Student: {lesson.extendedProps.studentName}</Text>
+          <Text style={styles.itemTitle}>{item.title}</Text>
+          <Text>Student: {item.extendedProps.studentName}</Text>
           <Text style={styles.itemTime}>
-            {new Date(lesson.start).toLocaleTimeString([], {
+            {new Date(item.start).toLocaleTimeString([], {
               hour: "2-digit",
               minute: "2-digit",
             })}
             {" - "}
-            {new Date(lesson.end).toLocaleTimeString([], {
+            {new Date(item.end).toLocaleTimeString([], {
               hour: "2-digit",
               minute: "2-digit",
             })}
@@ -75,37 +50,51 @@ export default function CalendarView({ events = [], onEventClick }: Props) {
       );
     },
     [onEventClick]
-  ); // 使用 useCallback 稳定函数引用
+  );
 
   return (
-    <Agenda
-      items={agendaItems}
-      renderItem={renderItem}
-      selected={selectedDate}
-      renderEmptyDate={() => (
-        <View style={styles.emptyDate}>
-          <Text>No lessons</Text>
-        </View>
-      )}
-      theme={{
-        agendaDayTextColor: "deepskyblue",
-        agendaDayNumColor: "deepskyblue",
-        agendaTodayColor: "deepskyblue",
-        dotColor: "deepskyblue",
-      }}
-    />
+    <View style={styles.container}>
+      <Calendar
+        current={selectedDate}
+        onDayPress={onDayPress}
+        markedDates={{
+          ...markedDates,
+          [selectedDate]: {
+            ...markedDates[selectedDate],
+            selected: true,
+            selectedColor: "deepskyblue",
+          },
+        }}
+        enableSwipeMonths={true}
+      />
+      <FlatList
+        data={events}
+        renderItem={renderItem}
+        keyExtractor={(item) => item.id}
+        ListEmptyComponent={
+          <View style={styles.emptyContainer}>
+            <Text style={styles.emptyText}>
+              No lessons scheduled for this day.
+            </Text>
+          </View>
+        }
+      />
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+  },
   itemContainer: {
     backgroundColor: "white",
     borderRadius: 5,
-    padding: 10,
-    marginRight: 10,
-    marginTop: 17,
-    minHeight: 80,
-    justifyContent: "center",
+    padding: 15,
+    marginHorizontal: 10,
+    marginTop: 10,
+    borderWidth: 1,
+    borderColor: "#eee",
   },
   itemTitle: {
     fontWeight: "bold",
@@ -115,12 +104,14 @@ const styles = StyleSheet.create({
     marginTop: 5,
     color: "#666",
   },
-  emptyDate: {
-    height: 60,
-    justifyContent: "center",
+  emptyContainer: {
+    flex: 1,
     alignItems: "center",
-    borderRadius: 5,
-    marginRight: 10,
-    marginTop: 17,
+    justifyContent: "center",
+    marginTop: 50,
+  },
+  emptyText: {
+    fontSize: 16,
+    color: "#888",
   },
 });

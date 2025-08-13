@@ -6,6 +6,8 @@ import React, {
   useContext,
   useEffect,
   ReactNode,
+  useMemo,
+  useCallback,
 } from "react";
 import {
   getAuth,
@@ -39,13 +41,16 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     return () => unsubscribe();
   }, []);
 
-  const login = async (email: string, pass: string) => {
+  const login = useCallback(async (email: string, pass: string) => {
     await signInWithEmailAndPassword(auth, email, pass);
-  };
+  }, []);
 
-  const logout = async () => {
+  const logout = useCallback(async () => {
     await signOut(auth);
-  };
+  }, []);
+
+  // ✅ 关键修复：将 useMemo 移到所有条件返回之前
+  const value = useMemo(() => ({ user, login, logout }), [user, login, logout]);
 
   if (isLoading) {
     return (
@@ -55,11 +60,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     );
   }
 
-  return (
-    <AuthContext.Provider value={{ user, login, logout }}>
-      {children}
-    </AuthContext.Provider>
-  );
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };
 
 export const useAuth = () => {
