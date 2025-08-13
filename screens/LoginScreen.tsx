@@ -1,14 +1,10 @@
 // screens/LoginScreen.tsx
 import React from "react";
-import { View, StyleSheet } from "react-native";
+import { View, StyleSheet, TouchableOpacity } from "react-native";
 import { Card, Text } from "react-native-paper";
 import LoginForm from "../components/LoginForm";
 
-// 我们将使用 React Navigation 的 navigation prop 进行页面跳转
-// 所以这里的类型定义可能需要根据你的导航器来调整
-type Props = {
-  navigation: any;
-};
+type Props = { navigation: any };
 
 export default function LoginScreen({ navigation }: Props) {
   return (
@@ -18,7 +14,17 @@ export default function LoginScreen({ navigation }: Props) {
           <Text variant="headlineMedium" style={styles.title}>
             Sign in to Coach Portal
           </Text>
+
           <LoginForm />
+
+          <TouchableOpacity
+            onPress={() => navigation.navigate("Register")}
+            style={styles.footerLink}
+          >
+            <Text style={{ color: "#1e90ff", textAlign: "center" }}>
+              没有账号？去注册
+            </Text>
+          </TouchableOpacity>
         </Card.Content>
       </Card>
     </View>
@@ -28,16 +34,11 @@ export default function LoginScreen({ navigation }: Props) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    justifyContent: "center", // 垂直居中
-    alignItems: "center", // 水平居中
+    justifyContent: "center",
+    alignItems: "center",
     backgroundColor: "#f5f5f5",
   },
-  card: {
-    width: "90%",
-    maxWidth: 400,
-  },
-  title: {
-    textAlign: "center",
-    marginBottom: 20,
-  },
+  card: { width: "90%", maxWidth: 400 },
+  title: { textAlign: "center", marginBottom: 20 },
+  footerLink: { marginTop: 12 },
 });

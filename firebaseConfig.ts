@@ -1,7 +1,11 @@
 // firebaseConfig.ts
 import { initializeApp, getApps, getApp } from "firebase/app";
 import { getFirestore, setLogLevel } from "firebase/firestore";
-import { getAuth } from "firebase/auth";
+import {
+  getAuth,
+  initializeAuth,
+  inMemoryPersistence, // ✅ 使用内存持久化
+} from "firebase/auth";
 
 const firebaseConfig = {
   apiKey: "AIzaSyCoETskBtCr1cGp92NdhjMyQSeWhA6HIEs",
@@ -13,11 +17,19 @@ const firebaseConfig = {
   measurementId: "G-PXN5C16TNV",
 };
 
-const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
+export const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
 
-// 开发阶段：打开 Firestore 调试日志（看到具体网络和规则命中）
-setLogLevel("debug");
+// 开发期：打开 Firestore 详细日志
+if (__DEV__) setLogLevel("debug");
 
-export { app };
+// ✅ 显式用“内存持久化”，既不写入存储，也不会有警告
+let _auth;
+try {
+  _auth = initializeAuth(app, { persistence: inMemoryPersistence });
+} catch {
+  // 热重载时 initializeAuth 可能已执行过，回退到 getAuth
+  _auth = getAuth(app);
+}
+
+export const auth = _auth;
 export const db = getFirestore(app);
-export const auth = getAuth(app);
