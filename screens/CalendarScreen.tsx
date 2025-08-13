@@ -8,13 +8,11 @@ import TopBar from "../components/TopBar";
 import CalendarView from "../components/CalendarView";
 import EventDialog from "../components/EventDialog";
 
-// 1. 导入 useAuth Hook
 import { useAuth } from "../lib/AuthContext";
 import { fetchCoachEvents } from "../api/mock";
 import { LessonEvent } from "../lib/types";
 
 export default function CalendarScreen() {
-  // 2. 从 AuthContext 获取当前登录的 user 对象
   const { user } = useAuth();
 
   const [events, setEvents] = useState<LessonEvent[]>([]);
@@ -22,29 +20,41 @@ export default function CalendarScreen() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState<LessonEvent | null>(null);
 
-  // 3. useEffect 的依赖项变为 user 对象
-  //    当 user 状态改变时 (登录或登出)，这个 effect 会重新运行
   useEffect(() => {
     const loadData = async () => {
-      // 确保 user 对象存在
       if (user) {
         setLoading(true);
-        // 4. 使用 user.uid 作为 coachId 来获取课程数据
-        //    user.uid 是 Firebase 提供的唯一用户ID，比邮箱更可靠
+        // 重要：确保您在 Firestore 中的 coachId 与 user.uid 匹配
+        // 我们用 user.uid 来获取该教练的课程
         const data = await fetchCoachEvents(user.uid);
         setEvents(data);
         setLoading(false);
       }
     };
     loadData();
-  }, [user]); // 依赖于从 context 来的 user
+  }, [user]);
 
-  // 5. 副标题现在可以使用 user.email 或 user.displayName
-  const subtitle = useMemo(() => (user ? `Coach: ${user.email}` : ""), [user]);
+  // ✅ 关键修复：增加了一层保护
+  //    - useMemo 用于优化性能
+  //    - `user ? ... : ""` 确保在 user 对象存在时才访问其属性
+  //    - `user.displayName || user.email` 提供了后备选项，如果用户没有设置 displayName，就显示 email
+  const subtitle = useMemo(
+    () => (user ? `Coach: ${user.displayName || user.email}` : ""),
+    [user]
+  );
 
   function handleEventClick(event: LessonEvent) {
     setSelectedEvent(event);
     setDialogOpen(true);
+  }
+
+  // ✅ 增加另一层保护：如果 user 对象还没加载好，可以显示加载中...
+  if (!user) {
+    return (
+      <View style={styles.container}>
+        <ActivityIndicator />
+      </View>
+    );
   }
 
   return (
@@ -75,7 +85,7 @@ export default function CalendarScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "white" },
+  container: { flex: 1, justifyContent: "center", backgroundColor: "white" },
   main: { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 8 },
   subtitle: { fontWeight: "bold" },
   infoText: { marginTop: 8, color: "#666" },
