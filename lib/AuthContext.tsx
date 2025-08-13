@@ -1,72 +1,56 @@
 // lib/AuthContext.tsx
-
-import React, {
-  createContext,
-  useState,
-  useContext,
-  useEffect,
-  ReactNode,
-  useMemo,
-  useCallback,
-} from "react";
+import React, { createContext, useContext, useEffect, useState } from "react";
+import { auth } from "../firebaseConfig";
 import {
-  getAuth,
   onAuthStateChanged,
   signInWithEmailAndPassword,
   signOut,
   User,
 } from "firebase/auth";
-import { ActivityIndicator, View } from "react-native";
-import { app } from "../firebaseConfig";
 
-interface AuthContextType {
+type AuthCtx = {
   user: User | null;
-  login: (email: string, pass: string) => Promise<void>;
+  initializing: boolean;
+  login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
-}
+};
 
-const AuthContext = createContext<AuthContextType | undefined>(undefined);
+const Ctx = createContext<AuthCtx>({
+  user: null,
+  initializing: true,
+  login: async () => {},
+  logout: async () => {},
+});
 
-const auth = getAuth(app);
-
-export const AuthProvider = ({ children }: { children: ReactNode }) => {
+export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
+  children,
+}) => {
   const [user, setUser] = useState<User | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const [initializing, setInitializing] = useState(true);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
-      setIsLoading(false);
+    const unsub = onAuthStateChanged(auth, (u) => {
+      console.log("[AuthContext] onAuthStateChanged:", u?.uid ?? "null");
+      setUser(u);
+      setInitializing(false);
     });
-    return () => unsubscribe();
+    return unsub;
   }, []);
 
-  const login = useCallback(async (email: string, pass: string) => {
-    await signInWithEmailAndPassword(auth, email, pass);
-  }, []);
+  const login = async (email: string, password: string) => {
+    // 这里抛出的错误会在 LoginForm 里被 catch 并 Alert
+    await signInWithEmailAndPassword(auth, email.trim(), password);
+  };
 
-  const logout = useCallback(async () => {
+  const logout = async () => {
     await signOut(auth);
-  }, []);
+  };
 
-  // ✅ 关键修复：将 useMemo 移到所有条件返回之前
-  const value = useMemo(() => ({ user, login, logout }), [user, login, logout]);
-
-  if (isLoading) {
-    return (
-      <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
-        <ActivityIndicator />
-      </View>
-    );
-  }
-
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+  return (
+    <Ctx.Provider value={{ user, initializing, login, logout }}>
+      {children}
+    </Ctx.Provider>
+  );
 };
 
-export const useAuth = () => {
-  const context = useContext(AuthContext);
-  if (context === undefined) {
-    throw new Error("useAuth must be used within an AuthProvider");
-  }
-  return context;
-};
+export const useAuth = () => useContext(Ctx);

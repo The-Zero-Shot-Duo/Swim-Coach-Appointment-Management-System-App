@@ -13,6 +13,19 @@ import { useAuth } from "../lib/AuthContext";
 import { fetchCoachEvents } from "../api/mock";
 import { LessonEvent } from "../lib/types";
 
+/** ---------- 安全时间工具：兼容 Timestamp / string / Date ---------- **/
+const toDate = (v: any): Date =>
+  v?.toDate ? v.toDate() : v instanceof Date ? v : new Date(v);
+
+const toYMD = (v: any) => {
+  const d = toDate(v);
+  // 按本地时区校正到“当天”，避免跨区导致日期偏移
+  const isoLocal = new Date(
+    d.getTime() - d.getTimezoneOffset() * 60000
+  ).toISOString();
+  return isoLocal.slice(0, 10); // "YYYY-MM-DD"
+};
+
 export default function CalendarScreen() {
   const { user } = useAuth();
 
@@ -21,38 +34,51 @@ export default function CalendarScreen() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState<LessonEvent | null>(null);
 
-  // State to track the currently selected day on the calendar
-  const [selectedDate, setSelectedDate] = useState<string>(
-    new Date().toISOString().split("T")[0]
-  );
+  // 当前选择的日期（YYYY-MM-DD）
+  const [selectedDate, setSelectedDate] = useState<string>(toYMD(new Date()));
 
+  // 拉取数据
   useEffect(() => {
     const loadData = async () => {
-      if (user) {
+      try {
         setLoading(true);
-        const eventsData = await fetchCoachEvents(user.uid);
-        setAllEvents(eventsData);
-        setLoading(false);
-      } else {
+        if (user) {
+          const eventsData = await fetchCoachEvents(user.uid);
+          setAllEvents(eventsData);
+        } else {
+          setAllEvents([]);
+        }
+      } catch (e) {
+        console.error("[CalendarScreen] load error:", e);
         setAllEvents([]);
+      } finally {
         setLoading(false);
       }
     };
     loadData();
   }, [user]);
 
-  // Memoized list of events for only the selected day
+  // （如果你仍在用旧版 CalendarView，则启用这个按天过滤的 memo，并把下面 props 的 events 改成 eventsForSelectedDay）
   const eventsForSelectedDay = useMemo(() => {
-    return allEvents.filter((event) => event.start.startsWith(selectedDate));
+    return allEvents.filter(
+      (event) => toYMD((event as any).start) === selectedDate
+    );
   }, [allEvents, selectedDate]);
 
-  // Memoized markings for the calendar (dots under dates with events)
+  // 生成日历打点
   const markedDates = useMemo(() => {
-    const markings: { [key: string]: { marked: true; dotColor: string } } = {};
-    allEvents.forEach((event) => {
-      const dateKey = event.start.split("T")[0];
-      markings[dateKey] = { marked: true, dotColor: "deepskyblue" };
-    });
+    const markings: Record<string, any> = {};
+    for (const ev of allEvents) {
+      const key = toYMD((ev as any).start);
+      // 你可以根据课程/教练自定义不同颜色的 dot；这里先给一个基础 dot
+      if (!markings[key])
+        markings[key] = { marked: true, dots: [{ key: "lesson" }] };
+      else if (!markings[key].marked) markings[key].marked = true;
+    }
+
+    // 可选：高亮今天
+    const today = toYMD(new Date());
+    markings[today] = { ...(markings[today] ?? {}), today: true };
     return markings;
   }, [allEvents]);
 
@@ -92,9 +118,12 @@ export default function CalendarScreen() {
           <ActivityIndicator animating={true} size="large" />
         </View>
       ) : (
-        // Pass all necessary props to the new CalendarView
         <CalendarView
-          events={eventsForSelectedDay}
+          // ✅ 若你使用“新版 CalendarView（内部按 selectedDate 过滤）”，就传 allEvents
+          events={allEvents}
+          // ❗️如果你还在用旧版 CalendarView（不做内部过滤），改成：
+          // events={eventsForSelectedDay}
+
           markedDates={markedDates}
           selectedDate={selectedDate}
           onDayPress={handleDayPress}

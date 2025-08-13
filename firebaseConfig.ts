@@ -1,9 +1,8 @@
 // firebaseConfig.ts
-
 import { initializeApp, getApps, getApp } from "firebase/app";
-import { getFirestore } from "firebase/firestore";
+import { getFirestore, setLogLevel } from "firebase/firestore";
+import { getAuth } from "firebase/auth";
 
-// 从 Firebase 控制台复制过来的您的项目专属配置
 const firebaseConfig = {
   apiKey: "AIzaSyCoETskBtCr1cGp92NdhjMyQSeWhA6HIEs",
   authDomain: "vivi-swim-school-coach.firebaseapp.com",
@@ -14,15 +13,11 @@ const firebaseConfig = {
   measurementId: "G-PXN5C16TNV",
 };
 
-let app;
-if (getApps().length === 0) {
-  // 如果没有已初始化的应用，则进行初始化
-  app = initializeApp(firebaseConfig);
-} else {
-  // 否则，直接获取已初始化的应用实例
-  app = getApp();
-}
+const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
 
-// 导出 app 和 db 实例
+// 开发阶段：打开 Firestore 调试日志（看到具体网络和规则命中）
+setLogLevel("debug");
+
 export { app };
 export const db = getFirestore(app);
+export const auth = getAuth(app);
