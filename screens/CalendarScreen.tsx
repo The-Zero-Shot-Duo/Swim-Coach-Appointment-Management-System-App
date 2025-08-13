@@ -13,6 +13,8 @@ import { fetchCoachEvents } from "../api/mock";
 import { LessonEvent } from "../lib/types";
 
 export default function CalendarScreen() {
+  console.log("CalendarScreen is rendering."); // <-- 添加这行
+
   const { user } = useAuth();
 
   const [events, setEvents] = useState<LessonEvent[]>([]);
@@ -23,16 +25,18 @@ export default function CalendarScreen() {
   useEffect(() => {
     const loadData = async () => {
       if (user) {
+        console.log("当前登录用户的 UID 是:", user.uid);
         setLoading(true);
-        // 重要：确保您在 Firestore 中的 coachId 与 user.uid 匹配
-        // 我们用 user.uid 来获取该教练的课程
         const data = await fetchCoachEvents(user.uid);
         setEvents(data);
         setLoading(false);
+      } else {
+        setEvents([]);
       }
     };
+
     loadData();
-  }, [user]);
+  }, [user]); // ✅ 关键修复：确保依赖数组里只有 user
 
   // ✅ 关键修复：增加了一层保护
   //    - useMemo 用于优化性能
@@ -48,10 +52,10 @@ export default function CalendarScreen() {
     setDialogOpen(true);
   }
 
-  // ✅ 增加另一层保护：如果 user 对象还没加载好，可以显示加载中...
+  // 并且，请确保 "if (!user)" 这个加载块使用了新的样式
   if (!user) {
     return (
-      <View style={styles.container}>
+      <View style={styles.loaderContainer}>
         <ActivityIndicator />
       </View>
     );
@@ -85,7 +89,8 @@ export default function CalendarScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, justifyContent: "center", backgroundColor: "white" },
+  container: { flex: 1, backgroundColor: "white" },
+  loaderContainer: { flex: 1, justifyContent: "center", alignItems: "center" },
   main: { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 8 },
   subtitle: { fontWeight: "bold" },
   infoText: { marginTop: 8, color: "#666" },

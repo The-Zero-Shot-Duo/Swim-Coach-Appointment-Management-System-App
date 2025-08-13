@@ -1,12 +1,14 @@
 // components/CalendarView.tsx
+
 import React, { useMemo } from "react";
 import { View, Text, StyleSheet, TouchableOpacity } from "react-native";
 import { Agenda, AgendaEntry } from "react-native-calendars";
 import { LessonEvent } from "../lib/types";
 
-// 定义 Agenda items 的数据结构
+interface CustomAgendaEntry extends AgendaEntry, LessonEvent {}
+
 interface AgendaItems {
-  [date: string]: AgendaEntry[];
+  [date: string]: CustomAgendaEntry[];
 }
 
 type Props = {
@@ -14,22 +16,24 @@ type Props = {
   onEventClick: (event: LessonEvent) => void;
 };
 
-// 辅助函数：将 LessonEvent 转换为 AgendaEntry
-function lessonToAgendaEntry(event: LessonEvent): AgendaEntry {
+function lessonToAgendaEntry(event: LessonEvent): CustomAgendaEntry {
   return {
-    ...event, // 保留原始数据
+    ...event,
     name: event.extendedProps.studentName,
     height: 80,
     day: event.start,
   };
 }
 
-export default function CalendarView({ events, onEventClick }: Props) {
-  // useMemo 用于优化性能，避免每次渲染都重新计算
+// ✅ 最终修复：为 events prop 设置一个默认值 []
+// 这样即使父组件传来 undefined，它也会安全地使用一个空数组
+export default function CalendarView({ events = [], onEventClick }: Props) {
+  console.log("CalendarView is rendering with", events.length, "events.");
+
   const agendaItems: AgendaItems = useMemo(() => {
     const items: AgendaItems = {};
     events.forEach((event) => {
-      const dateKey = event.start.split("T")[0]; // e.g., "2025-08-14"
+      const dateKey = event.start.split("T")[0];
       if (!items[dateKey]) {
         items[dateKey] = [];
       }
@@ -38,23 +42,25 @@ export default function CalendarView({ events, onEventClick }: Props) {
     return items;
   }, [events]);
 
-  // 自定义渲染每个日程项
-  const renderItem = (item: AgendaEntry) => {
-    const lesson = item as LessonEvent; // 类型转换回 LessonEvent
+  const selectedDate = useMemo(() => {
+    return new Date().toISOString().split("T")[0];
+  }, []);
+
+  const renderItem = (item: CustomAgendaEntry) => {
     return (
       <TouchableOpacity
         style={styles.itemContainer}
-        onPress={() => onEventClick(lesson)}
+        onPress={() => onEventClick(item)}
       >
-        <Text style={styles.itemTitle}>{lesson.title}</Text>
-        <Text>Student: {lesson.extendedProps.studentName}</Text>
+        <Text style={styles.itemTitle}>{item.title}</Text>
+        <Text>Student: {item.extendedProps.studentName}</Text>
         <Text style={styles.itemTime}>
-          {new Date(lesson.start).toLocaleTimeString([], {
+          {new Date(item.start).toLocaleTimeString([], {
             hour: "2-digit",
             minute: "2-digit",
           })}
           {" - "}
-          {new Date(lesson.end).toLocaleTimeString([], {
+          {new Date(item.end).toLocaleTimeString([], {
             hour: "2-digit",
             minute: "2-digit",
           })}
@@ -66,16 +72,13 @@ export default function CalendarView({ events, onEventClick }: Props) {
   return (
     <Agenda
       items={agendaItems}
-      renderItem={renderItem}
-      // 今天的日期
-      selected={new Date().toISOString().split("T")[0]}
-      // 当某个日期没有事件时显示的内容
+      renderItem={renderItem as any}
+      selected={selectedDate}
       renderEmptyDate={() => (
         <View style={styles.emptyDate}>
           <Text>No lessons</Text>
         </View>
       )}
-      // Agenda 的主题，可以定制颜色等
       theme={{
         agendaDayTextColor: "deepskyblue",
         agendaDayNumColor: "deepskyblue",

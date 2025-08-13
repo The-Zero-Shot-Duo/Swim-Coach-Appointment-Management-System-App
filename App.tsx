@@ -22,7 +22,7 @@ const Stack = createNativeStackNavigator();
 function AppNavigator() {
   // 从我们的 AuthContext 中获取 user 对象
   const { user } = useAuth();
-
+  console.log("AppNavigator is rendering. User authenticated:", !!user); // <-- 添加这行
   return (
     <Stack.Navigator screenOptions={{ headerShown: false }}>
       {user ? (
@@ -40,6 +40,7 @@ function AppNavigator() {
  * 这是应用的根组件
  */
 export default function App() {
+  console.log("App.tsx is rendering."); // <-- 添加这行
   return (
     // 1. PaperProvider 是 UI 库的根，必须在最外层
     <PaperProvider>
