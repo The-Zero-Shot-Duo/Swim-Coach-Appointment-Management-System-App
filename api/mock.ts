@@ -1,44 +1,39 @@
-// src/api/mock.ts
+// api/mock.ts (现在是连接到 Firebase)
 
-import { LessonEvent } from "../lib/types"; // 确保 types.ts 存在于 src/lib/
+import { collection, query, where, getDocs } from "firebase/firestore";
+import { db } from "../firebaseConfig"; // 导入我们的数据库实例
+import { LessonEvent } from "../lib/types";
 
 export async function fetchCoachEvents(
   coachId: string
 ): Promise<LessonEvent[]> {
-  console.log(`Fetching events for coach: ${coachId}`);
-  // 模拟网络延迟
-  await new Promise((r) => setTimeout(r, 500));
+  console.log(`Fetching events from FIRESTORE for coach: ${coachId}`);
 
-  // 返回一些模拟数据
-  return [
-    {
-      id: "evt_1",
-      title: "Freestyle – Alice",
-      start: "2025-08-14T10:00:00",
-      end: "2025-08-14T11:00:00",
-      extendedProps: {
-        studentName: "Alice Chen",
-        courseName: "Freestyle Basics",
-        durationMin: 60,
-        coachId,
-        coachName: "Coach " + coachId,
-        location: "Pool A",
-        notes: "Focus on breathing rhythm",
-      },
-    },
-    {
-      id: "evt_2",
-      title: "Backstroke – Ben",
-      start: "2025-08-15T13:30:00",
-      end: "2025-08-15T14:30:00",
-      extendedProps: {
-        studentName: "Ben Park",
-        courseName: "Backstroke Intro",
-        durationMin: 60,
-        coachId,
-        coachName: "Coach " + coachId,
-        location: "Pool B",
-      },
-    },
-  ];
+  const events: LessonEvent[] = [];
+  try {
+    // 1. 创建一个查询 (query)
+    // - 'appointments' 是你的集合名称
+    // - where("extendedProps.coachId", "==", coachId) 是查询条件
+    const q = query(
+      collection(db, "appointments"),
+      where("extendedProps.coachId", "==", coachId)
+    );
+
+    // 2. 执行查询
+    const querySnapshot = await getDocs(q);
+
+    // 3. 遍历查询结果
+    querySnapshot.forEach((doc) => {
+      // doc.data() 是文档的内容
+      // 我们把它转换为 LessonEvent 类型
+      events.push(doc.data() as LessonEvent);
+    });
+
+    console.log("Fetched events successfully:", events);
+    return events;
+  } catch (error) {
+    console.error("Error fetching events from Firestore: ", error);
+    // 如果出错，返回一个空数组
+    return [];
+  }
 }

@@ -14,15 +14,14 @@ const Stack = createNativeStackNavigator();
 
 // 将导航逻辑提取到一个单独的组件中
 function AppNavigator() {
-  const { isAuthenticated } = useAuth(); // 从 Context 获取认证状态
+  // 现在我们检查 user 对象是否存在，而不是一个布尔值
+  const { user } = useAuth();
 
   return (
     <Stack.Navigator screenOptions={{ headerShown: false }}>
-      {isAuthenticated ? (
-        // 如果已认证，只显示主应用页面
+      {user ? ( // 如果 user 对象存在，说明已登录
         <Stack.Screen name="Calendar" component={CalendarScreen} />
       ) : (
-        // 如果未认证，只显示登录页面
         <Stack.Screen name="Login" component={LoginScreen} />
       )}
     </Stack.Navigator>

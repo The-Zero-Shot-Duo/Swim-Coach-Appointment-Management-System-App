@@ -8,35 +8,40 @@ import TopBar from "../components/TopBar";
 import CalendarView from "../components/CalendarView";
 import EventDialog from "../components/EventDialog";
 
-import { getUser } from "../lib/auth";
+// 1. 导入 useAuth Hook
+import { useAuth } from "../lib/AuthContext";
 import { fetchCoachEvents } from "../api/mock";
 import { LessonEvent } from "../lib/types";
 
 export default function CalendarScreen() {
-  const [user, setUser] = useState<{ id: string; name: string } | null>(null);
+  // 2. 从 AuthContext 获取当前登录的 user 对象
+  const { user } = useAuth();
+
   const [events, setEvents] = useState<LessonEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState<LessonEvent | null>(null);
 
+  // 3. useEffect 的依赖项变为 user 对象
+  //    当 user 状态改变时 (登录或登出)，这个 effect 会重新运行
   useEffect(() => {
     const loadData = async () => {
-      setLoading(true);
-      const currentUser = await getUser();
-      if (currentUser) {
-        setUser(currentUser);
-        // 从模拟API获取数据
-        const data = await fetchCoachEvents(currentUser.id);
+      // 确保 user 对象存在
+      if (user) {
+        setLoading(true);
+        // 4. 使用 user.uid 作为 coachId 来获取课程数据
+        //    user.uid 是 Firebase 提供的唯一用户ID，比邮箱更可靠
+        const data = await fetchCoachEvents(user.uid);
         setEvents(data);
+        setLoading(false);
       }
-      setLoading(false);
     };
     loadData();
-  }, []);
+  }, [user]); // 依赖于从 context 来的 user
 
-  const subtitle = useMemo(() => (user ? `Coach: ${user.name}` : ""), [user]);
+  // 5. 副标题现在可以使用 user.email 或 user.displayName
+  const subtitle = useMemo(() => (user ? `Coach: ${user.email}` : ""), [user]);
 
-  // 点击日历事件时的处理函数
   function handleEventClick(event: LessonEvent) {
     setSelectedEvent(event);
     setDialogOpen(true);
@@ -56,10 +61,8 @@ export default function CalendarScreen() {
           <Text style={styles.infoText}>No lessons scheduled.</Text>
         )}
       </View>
-      {/* 将获取到的事件和点击处理器传递给日历视图 */}
       <CalendarView events={events} onEventClick={handleEventClick} />
 
-      {/* 仅在有选定事件时渲染弹窗 */}
       {selectedEvent && (
         <EventDialog
           open={dialogOpen}

@@ -1,40 +1,42 @@
 // components/LoginForm.tsx
 
+// ... 其他 imports ...
 import React, { useState } from "react";
-import { View } from "react-native";
+import { View, Alert } from "react-native";
 import { TextInput, Button } from "react-native-paper";
-import { useAuth } from "../lib/AuthContext"; // 导入 useAuth
+import { useAuth } from "../lib/AuthContext";
 
 export default function LoginForm() {
-  const [username, setUsername] = useState("");
+  const [email, setEmail] = useState(""); // 从 username 改为 email
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
-  const { login } = useAuth(); // 从 Context 获取 login 函数
+  const { login } = useAuth();
 
   async function onSubmit() {
-    if (!username || loading) return;
+    if (!email || !password || loading) return;
     setLoading(true);
     try {
-      await login(username); // 调用 Context 的 login
-      // 登录成功后不需要手动导航，App.tsx 会自动切换导航栈
-    } catch (error) {
+      await login(email, password); // 调用新的 login 函数
+    } catch (error: any) {
       console.error("Login failed:", error);
+      // 显示一个更友好的错误提示
+      Alert.alert("Login Failed", error.message);
     } finally {
       setLoading(false);
     }
   }
 
-  // ... JSX 部分保持不变
   return (
     <View>
       <TextInput
-        label="Username"
-        value={username}
-        onChangeText={setUsername}
+        label="Email" // 标签从 Username 改为 Email
+        value={email}
+        onChangeText={setEmail}
         mode="outlined"
         style={{ marginBottom: 16 }}
         autoCapitalize="none"
-        placeholder="coach_rain"
+        keyboardType="email-address"
+        placeholder="coach.rain@test.com"
       />
       <TextInput
         label="Password"
