@@ -1,10 +1,11 @@
 // components/CalendarView.tsx
 
-import React, { useMemo } from "react";
+import React, { useMemo, useCallback } from "react";
 import { View, Text, StyleSheet, TouchableOpacity } from "react-native";
 import { Agenda, AgendaEntry } from "react-native-calendars";
 import { LessonEvent } from "../lib/types";
 
+// 创建一个安全的、包含所有信息的日程条目类型
 interface CustomAgendaEntry extends AgendaEntry, LessonEvent {}
 
 interface AgendaItems {
@@ -12,67 +13,74 @@ interface AgendaItems {
 }
 
 type Props = {
+  // prop 改回接收原始的 events 数组
   events: LessonEvent[];
   onEventClick: (event: LessonEvent) => void;
 };
 
-function lessonToAgendaEntry(event: LessonEvent): CustomAgendaEntry {
-  return {
-    ...event,
-    name: event.extendedProps.studentName,
-    height: 80,
-    day: event.start,
-  };
-}
-
-// ✅ 最终修复：为 events prop 设置一个默认值 []
-// 这样即使父组件传来 undefined，它也会安全地使用一个空数组
 export default function CalendarView({ events = [], onEventClick }: Props) {
-  console.log("CalendarView is rendering with", events.length, "events.");
+  const selectedDate = useMemo(() => {
+    return new Date().toISOString().split("T")[0];
+  }, []);
 
+  // 数据转换逻辑在这里，并使用 useMemo 保证稳定
   const agendaItems: AgendaItems = useMemo(() => {
     const items: AgendaItems = {};
+
     events.forEach((event) => {
       const dateKey = event.start.split("T")[0];
       if (!items[dateKey]) {
         items[dateKey] = [];
       }
-      items[dateKey].push(lessonToAgendaEntry(event));
+      // 安全地创建 CustomAgendaEntry
+      items[dateKey].push({
+        ...event,
+        name: event.extendedProps.studentName,
+        height: 80,
+        day: event.start,
+      });
     });
+
+    // 关键！如果最终的 items 对象是空的，为 "selectedDate" (今天) 添加一个空数组
+    // 这可以规避 Agenda 组件在 items 为完全空对象时的 Bug
+    if (Object.keys(items).length === 0) {
+      items[selectedDate] = [];
+    }
+
     return items;
-  }, [events]);
+  }, [events, selectedDate]); // 依赖于 events 和 selectedDate
 
-  const selectedDate = useMemo(() => {
-    return new Date().toISOString().split("T")[0];
-  }, []);
-
-  const renderItem = (item: CustomAgendaEntry) => {
-    return (
-      <TouchableOpacity
-        style={styles.itemContainer}
-        onPress={() => onEventClick(item)}
-      >
-        <Text style={styles.itemTitle}>{item.title}</Text>
-        <Text>Student: {item.extendedProps.studentName}</Text>
-        <Text style={styles.itemTime}>
-          {new Date(item.start).toLocaleTimeString([], {
-            hour: "2-digit",
-            minute: "2-digit",
-          })}
-          {" - "}
-          {new Date(item.end).toLocaleTimeString([], {
-            hour: "2-digit",
-            minute: "2-digit",
-          })}
-        </Text>
-      </TouchableOpacity>
-    );
-  };
+  const renderItem = useCallback(
+    (item: AgendaEntry) => {
+      const lesson = item as LessonEvent;
+      return (
+        <TouchableOpacity
+          style={styles.itemContainer}
+          onPress={() => onEventClick(lesson)}
+        >
+          <Text style={styles.itemTitle}>{lesson.title}</Text>
+          <Text>Student: {lesson.extendedProps.studentName}</Text>
+          <Text style={styles.itemTime}>
+            {new Date(lesson.start).toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit",
+            })}
+            {" - "}
+            {new Date(lesson.end).toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit",
+            })}
+          </Text>
+        </TouchableOpacity>
+      );
+    },
+    [onEventClick]
+  ); // 使用 useCallback 稳定函数引用
 
   return (
     <Agenda
       items={agendaItems}
-      renderItem={renderItem as any}
+      renderItem={renderItem}
       selected={selectedDate}
       renderEmptyDate={() => (
         <View style={styles.emptyDate}>

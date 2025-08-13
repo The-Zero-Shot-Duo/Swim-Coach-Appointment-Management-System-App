@@ -13,10 +13,9 @@ import { fetchCoachEvents } from "../api/mock";
 import { LessonEvent } from "../lib/types";
 
 export default function CalendarScreen() {
-  console.log("CalendarScreen is rendering."); // <-- 添加这行
-
   const { user } = useAuth();
 
+  // 状态回归到只管理原始的 events 数组
   const [events, setEvents] = useState<LessonEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -25,23 +24,19 @@ export default function CalendarScreen() {
   useEffect(() => {
     const loadData = async () => {
       if (user) {
-        console.log("当前登录用户的 UID 是:", user.uid);
         setLoading(true);
-        const data = await fetchCoachEvents(user.uid);
-        setEvents(data);
+        const eventsData = await fetchCoachEvents(user.uid);
+        setEvents(eventsData); // 直接设置原始数据
         setLoading(false);
       } else {
         setEvents([]);
+        setLoading(false);
       }
     };
 
     loadData();
-  }, [user]); // ✅ 关键修复：确保依赖数组里只有 user
+  }, [user]);
 
-  // ✅ 关键修复：增加了一层保护
-  //    - useMemo 用于优化性能
-  //    - `user ? ... : ""` 确保在 user 对象存在时才访问其属性
-  //    - `user.displayName || user.email` 提供了后备选项，如果用户没有设置 displayName，就显示 email
   const subtitle = useMemo(
     () => (user ? `Coach: ${user.displayName || user.email}` : ""),
     [user]
@@ -52,7 +47,6 @@ export default function CalendarScreen() {
     setDialogOpen(true);
   }
 
-  // 并且，请确保 "if (!user)" 这个加载块使用了新的样式
   if (!user) {
     return (
       <View style={styles.loaderContainer}>
@@ -68,14 +62,21 @@ export default function CalendarScreen() {
         <Text variant="titleLarge" style={styles.subtitle}>
           {subtitle}
         </Text>
-        {loading && (
-          <ActivityIndicator animating={true} style={{ marginTop: 8 }} />
-        )}
-        {!loading && events.length === 0 && (
-          <Text style={styles.infoText}>No lessons scheduled.</Text>
-        )}
       </View>
-      <CalendarView events={events} onEventClick={handleEventClick} />
+
+      {loading ? (
+        <View style={styles.loaderContainer}>
+          <ActivityIndicator animating={true} size="large" />
+        </View>
+      ) : (
+        <>
+          {events.length === 0 && (
+            <Text style={styles.infoText}>No lessons scheduled.</Text>
+          )}
+          {/* 将原始的 events 数组传递给 CalendarView */}
+          <CalendarView events={events} onEventClick={handleEventClick} />
+        </>
+      )}
 
       {selectedEvent && (
         <EventDialog
@@ -93,5 +94,5 @@ const styles = StyleSheet.create({
   loaderContainer: { flex: 1, justifyContent: "center", alignItems: "center" },
   main: { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 8 },
   subtitle: { fontWeight: "bold" },
-  infoText: { marginTop: 8, color: "#666" },
+  infoText: { textAlign: "center", marginTop: 20, color: "#666" },
 });
