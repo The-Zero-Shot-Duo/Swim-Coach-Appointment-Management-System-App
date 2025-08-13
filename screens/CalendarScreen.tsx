@@ -1,18 +1,19 @@
 // screens/CalendarScreen.tsx
+
 import React, { useEffect, useMemo, useState } from "react";
 import { View, StyleSheet } from "react-native";
 import { ActivityIndicator, Text } from "react-native-paper";
 
-import TopBar from "../components/TopBar"; // 下一步会创建
-import CalendarView from "../components/CalendarView"; // 下一步会创建
-import EventDialog from "../components/EventDialog"; // 下一步会创建
+import TopBar from "../components/TopBar";
+import CalendarView from "../components/CalendarView";
+import EventDialog from "../components/EventDialog";
 
-import { getUser } from "../lib/auth"; // 异步版本
-import { fetchCoachEvents } from "../api/mock"; // 现在应从 Firebase/后端获取
+import { getUser } from "../lib/auth";
+import { fetchCoachEvents } from "../api/mock";
 import { LessonEvent } from "../lib/types";
 
 export default function CalendarScreen() {
-  const [user, setUser] = useState(null);
+  const [user, setUser] = useState<{ id: string; name: string } | null>(null);
   const [events, setEvents] = useState<LessonEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -24,6 +25,7 @@ export default function CalendarScreen() {
       const currentUser = await getUser();
       if (currentUser) {
         setUser(currentUser);
+        // 从模拟API获取数据
         const data = await fetchCoachEvents(currentUser.id);
         setEvents(data);
       }
@@ -34,6 +36,7 @@ export default function CalendarScreen() {
 
   const subtitle = useMemo(() => (user ? `Coach: ${user.name}` : ""), [user]);
 
+  // 点击日历事件时的处理函数
   function handleEventClick(event: LessonEvent) {
     setSelectedEvent(event);
     setDialogOpen(true);
@@ -53,12 +56,15 @@ export default function CalendarScreen() {
           <Text style={styles.infoText}>No lessons scheduled.</Text>
         )}
       </View>
+      {/* 将获取到的事件和点击处理器传递给日历视图 */}
       <CalendarView events={events} onEventClick={handleEventClick} />
+
+      {/* 仅在有选定事件时渲染弹窗 */}
       {selectedEvent && (
         <EventDialog
           open={dialogOpen}
           onClose={() => setDialogOpen(false)}
-          data={selectedEvent} // 直接传递整个事件对象
+          data={selectedEvent}
         />
       )}
     </View>

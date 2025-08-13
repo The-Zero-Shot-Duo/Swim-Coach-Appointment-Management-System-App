@@ -1,33 +1,30 @@
 // components/LoginForm.tsx
+
 import React, { useState } from "react";
 import { View } from "react-native";
 import { TextInput, Button } from "react-native-paper";
-import { useNavigation } from "@react-navigation/native";
-import { login } from "../lib/auth"; // 假设 auth.ts 已被改造成异步
+import { useAuth } from "../lib/AuthContext"; // 导入 useAuth
 
 export default function LoginForm() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
-  const navigation = useNavigation();
+  const { login } = useAuth(); // 从 Context 获取 login 函数
 
   async function onSubmit() {
     if (!username || loading) return;
-
     setLoading(true);
     try {
-      // 登录逻辑现在是异步的
-      await login(username);
-      // 导航到日历页
-      navigation.navigate("Calendar"); // 假设主页路由名叫 'Calendar'
+      await login(username); // 调用 Context 的 login
+      // 登录成功后不需要手动导航，App.tsx 会自动切换导航栈
     } catch (error) {
       console.error("Login failed:", error);
-      // 这里可以添加错误提示，例如一个 Toast 或 Snackbar
     } finally {
       setLoading(false);
     }
   }
 
+  // ... JSX 部分保持不变
   return (
     <View>
       <TextInput
@@ -44,7 +41,7 @@ export default function LoginForm() {
         value={password}
         onChangeText={setPassword}
         mode="outlined"
-        secureTextEntry // 用于密码输入
+        secureTextEntry
         style={{ marginBottom: 24 }}
         placeholder="••••••••"
       />

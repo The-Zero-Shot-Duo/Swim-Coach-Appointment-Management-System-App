@@ -1,21 +1,16 @@
 // components/TopBar.tsx
+
 import React from "react";
 import { Appbar } from "react-native-paper";
-import { useNavigation } from "@react-navigation/native";
-import { logout } from "../lib/auth";
+import { useAuth } from "../lib/AuthContext"; // 导入 useAuth
 
 export default function TopBar() {
-  const navigation = useNavigation();
-
-  async function handleLogout() {
-    await logout();
-    navigation.navigate("Login"); // 跳转到登录页
-  }
+  const { logout } = useAuth(); // 从 Context 获取 logout 函数
 
   return (
     <Appbar.Header>
       <Appbar.Content title="Swim Coach Schedule" />
-      <Appbar.Action icon="logout" onPress={handleLogout} />
+      <Appbar.Action icon="logout" onPress={logout} />
     </Appbar.Header>
   );
 }
