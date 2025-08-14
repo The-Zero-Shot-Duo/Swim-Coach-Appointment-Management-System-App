@@ -1,347 +1,375 @@
-// functions/src/index.ts
-
 import * as admin from "firebase-admin";
 import { onRequest } from "firebase-functions/v2/https";
-import { setGlobalOptions } from "firebase-functions/v2";
 import { DateTime } from "luxon";
-// ✅ 使用 Admin SDK 的模块化 Firestore 导入
-import { getFirestore, FieldValue, Timestamp } from "firebase-admin/firestore";
 
-setGlobalOptions({ region: "us-central1" });
-
+/** ---------- Admin 初始化 ---------- */
 if (!admin.apps.length) {
   admin.initializeApp();
   console.log("[functions] admin initialized");
 }
+const db = admin.firestore();
+const Timestamp = admin.firestore.Timestamp;
 
-// ✅ 用模块化的 getFirestore()
-const db = getFirestore();
+/** ---------- 安全：可选的共享密钥（Emulator 可留空） ---------- */
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || "";
 
-/* ----------------------------- 小工具 & 规范化 ----------------------------- */
+/** ---------- 小工具 ---------- */
+const canon = (s?: string | null) => (s || "").trim().toLowerCase();
 
-const trim = (s?: string | null) => (s ?? "").trim();
+/** 清洗 coach 提示词：去掉 “for …” 之后的内容、标点、多余空格 */
+function cleanCoachHint(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  return raw
+    .replace(/\s+for\b.*$/i, "") // e.g. "Amber for Private lesson" -> "Amber"
+    .replace(/[^\p{L}]+/gu, " ") // 非字母变空格（支持多语言）
+    .trim();
+}
 
-const toDate = (v: any): Date | null => {
-  if (!v) return null;
-  if (v instanceof Date) return v;
-  if (v?.toDate) return v.toDate(); // Firestore Timestamp
-  if (typeof v === "string") {
-    const d = new Date(v);
-    return isNaN(d.getTime()) ? null : d;
+/** 从邮件 text/html/subject 提取教练名字（兼容 CoachAmber / Coach Amber / with CoachAmber / Who: CoachAmber 等） */
+function extractCoachHint(
+  subject: string,
+  text: string,
+  html?: string
+): string | null {
+  const haystacks = [text || "", html || "", subject || ""];
+
+  const patterns: RegExp[] = [
+    /Who:\s*Coach\s*([A-Za-z]+)/i, // Who: CoachAmber / Coach Amber
+    /with\s+Coach\s*([A-Za-z]+)/i, // with CoachAmber / Coach Amber
+    /\bCoach\s+([A-Za-z]+)\b/i, // … Coach Amber …
+    /\bCoach([A-Z][a-z]+)\b/, // … CoachAmber …
+  ];
+
+  for (const s of haystacks) {
+    for (const re of patterns) {
+      const m = re.exec(s);
+      if (m?.[1]) return cleanCoachHint(m[1]);
+    }
   }
   return null;
-};
-
-function canonName(s?: string | null): string {
-  const x = trim(s).toLowerCase().replace(/\s+/g, " ");
-  return x;
 }
 
-function splitCamelCoach(s: string): string {
-  if (!s) return s;
-  return s.replace(/([a-z])([A-Z])/g, "$1 $2").trim();
-}
+const stripHtml = (html?: string) =>
+  (html || "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/\s+\n/g, "\n")
+    .replace(/[ \t]+/g, " ")
+    .trim();
 
-function splitStudentList(raw?: string | null): string[] {
-  const s = trim(raw);
-  if (!s) return [];
-  const replaced = s.replace(/\s+and\s+/gi, "&").replace(/,/g, "&");
-  return replaced
-    .split("&")
-    .map((x) => trim(x))
-    .filter(Boolean);
-}
-
-/* ----------------------------- 解析邮件内容 ----------------------------- */
-
-type ParsedAction = "book" | "cancel" | "change" | "unknown";
-
-function detectAction(subject: string, text: string): ParsedAction {
-  const S = subject.toLowerCase();
-  const T = text.toLowerCase();
-
-  if (S.includes("has booked") || S.includes("confirmation of booking")) {
-    return "book";
-  }
-  if (
-    S.includes("confirmation of cancellation") ||
-    T.includes("has been cancelled")
-  ) {
-    return "cancel";
-  }
-  if (
-    S.includes("rescheduled") ||
-    S.includes("changed") ||
-    T.includes("rescheduled")
-  ) {
-    return "change";
-  }
-  return "unknown";
-}
-
-function parseWhen(
+/** 解析邮件动作：book / cancel / change(暂不处理) */
+function parseAction(
   subject: string,
   text: string
+): "book" | "cancel" | "change" {
+  const s = `${subject} ${text}`.toLowerCase();
+  if (s.includes("has booked") || s.includes("booked an appointment"))
+    return "book";
+  if (
+    s.includes("has been cancelled") ||
+    s.includes("confirmation of cancellation")
+  )
+    return "cancel";
+  if (
+    s.includes("rescheduled") ||
+    s.includes("changed") ||
+    s.includes("updated")
+  )
+    return "change"; // 先不实现
+  return "book"; // 默认按预约处理，避免漏单（可按需改）
+}
+
+/** 从 subject / text 提取教练线索，如 "CoachAmber" / "Coach Amber" / "Amber" */
+function parseCoachHint(subject: string, text: string): string | null {
+  const blob = `${subject}\n${text}`;
+  // 常见："with CoachAmber" / "with Coach Amber" / "Who: CoachAmber"
+  const m1 = blob.match(/Coach\s*([A-Za-z][A-Za-z ]{0,30})/);
+  if (m1?.[1]) return m1[1].trim();
+  // 兜底：直接找 “CoachXxx” 无空格
+  const m2 = blob.match(/Coach([A-Za-z]+)/);
+  if (m2?.[1]) return m2[1].trim();
+  return null;
+}
+
+/** 解析学员人名（支持 Semi-Private："A&B&C ..."） */
+function parseStudents(
+  subject: string,
+  text: string
+): { studentName?: string; studentNames?: string[] } {
+  // 例： "... has booked ... for Semi-Private Lesson" 前面的开头就是 "Iris&Victoria&Isabella Family"
+  const m = subject.match(/^(.+?)\s+has booked/i);
+  if (m?.[1]) {
+    const raw = m[1].trim();
+    const parts = raw
+      .split("&")
+      .map((x) => x.trim())
+      .filter(Boolean);
+    return {
+      studentName: raw,
+      studentNames: parts.length > 1 ? parts : undefined,
+    };
+  }
+  // 取消类："... has been cancelled for Leandro Jia."
+  const m2 = text.match(/has been cancelled for\s+(.+?)\./i);
+  if (m2?.[1]) return { studentName: m2[1].trim() };
+  return {};
+}
+
+/** 解析时间：
+ * book: "When: Fri Aug 15, 2025 2:00 PM – 3:00 PM (UTC)"
+ * cancel: "on 08-15-2025 at 02:00 PM"
+ */
+function parseWhen(
+  subject: string,
+  text: string,
+  html?: string
 ): { start?: Date; end?: Date } {
-  const whenLine = (text.match(/^When:\s*(.+)$/im) || [])[1];
-  if (whenLine) {
-    const zoneMatch = whenLine.match(/\(([^)]+)\)\s*$/);
-    const zone = zoneMatch ? zoneMatch[1] : "UTC";
-    const main = whenLine.replace(/\s*\([^)]+\)\s*$/, "");
+  let start: Date | undefined;
+  let end: Date | undefined;
 
-    const m = main.match(/(.+?)\s+–\s+(.+)$/);
+  // ---------- A. 先尝试解析 JSON-LD ----------
+  if (html) {
+    const m = html.match(
+      /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/i
+    );
     if (m) {
-      const left = m[1];
-      const right = m[2];
+      try {
+        const json = JSON.parse(m[1].trim());
 
-      const datePart = left.replace(/\d{1,2}:\d{2}\s*[ap]m?/i, "").trim();
-      const startStr = left.trim();
-      const endStr = `${datePart} ${right}`.trim();
+        // 有的商家把时间放在根上（startDate / endDate），
+        // 有的放在 reservationFor 下；两种都兜一下。
+        const startISO: string | undefined =
+          json.startDate ||
+          json.reservationFor?.startDate ||
+          json?.reservation?.startDate;
+        const endISO: string | undefined =
+          json.endDate ||
+          json.reservationFor?.endDate ||
+          json?.reservation?.endDate;
 
-      const fmts = [
-        "EEE MMM d, yyyy h:mm a",
-        "EEE MMM dd, yyyy h:mm a",
-        "EEE MMM d, yyyy h a",
-        "EEE MMM dd, yyyy h a",
-      ];
-
-      let start: Date | null = null;
-      let end: Date | null = null;
-      for (const f of fmts) {
-        if (!start) {
-          const dt = DateTime.fromFormat(startStr, f, { zone });
-          if (dt.isValid) start = dt.toJSDate();
+        if (startISO) {
+          const dt = DateTime.fromISO(String(startISO), { setZone: true });
+          if (dt.isValid) start = dt.toUTC().toJSDate();
         }
-        if (!end) {
-          const dt = DateTime.fromFormat(endStr, f, { zone });
-          if (dt.isValid) end = dt.toJSDate();
+        if (endISO) {
+          const dt = DateTime.fromISO(String(endISO), { setZone: true });
+          if (dt.isValid) end = dt.toUTC().toJSDate();
         }
+
+        if (start) {
+          console.log("[when] parsed from ld+json", { startISO, endISO });
+          return { start, end };
+        }
+      } catch (e) {
+        console.log("[when] ld+json parse error:", e);
       }
-      if (start && end) return { start, end };
     }
   }
 
-  const cancelLine =
-    subject.match(
-      /on\s+(\d{2}[-/]\d{2}[-/]\d{4})\s+at\s+(\d{1,2}:\d{2}\s*[AP]M)/i
-    ) ||
-    text.match(
-      /on\s+(\d{2}[-/]\d{2}[-/]\d{4})\s+at\s+(\d{1,2}:\d{2}\s*[AP]M)/i
-    );
-  if (cancelLine) {
-    const datePart = cancelLine[1];
-    const timePart = cancelLine[2];
-    const dt = DateTime.fromFormat(
-      `${datePart} ${timePart}`,
-      "MM-dd-yyyy h:mm a",
-      {
-        zone: "UTC",
+  // ---------- B. 文本格式回退 ----------
+  const txt = `${subject}\n${text}`;
+
+  // 例：“… on 08-23-2025 at 03:15 PM …”
+  // 默认时区可按需要调整（校区在 Baldwin Park 可用 America/Los_Angeles）
+  const zone = "America/Los_Angeles";
+  let md = txt.match(
+    /\bon\s+(\d{2}[-/]\d{2}[-/]\d{4})\s+at\s+(\d{1,2}:\d{2}\s*[AP]M)\b/i
+  );
+  if (md) {
+    const [, d, t] = md;
+    const startDT = DateTime.fromFormat(`${d} ${t}`, "MM-dd-yyyy h:mm a", {
+      zone,
+    });
+    if (startDT.isValid) {
+      start = startDT.toUTC().toJSDate();
+      // 再找同一行/附近是否有 “– 3:45 PM” 作为结束
+      const sameLine = txt.slice(md.index || 0, (md.index || 0) + 120); // 附近 120 字
+      const mdEnd = sameLine.match(/–\s*(\d{1,2}:\d{2}\s*[AP]M)\b/);
+      if (mdEnd) {
+        const endDT = DateTime.fromFormat(mdEnd[1], "h:mm a", { zone }).set({
+          year: startDT.year,
+          month: startDT.month,
+          day: startDT.day,
+        });
+        if (endDT.isValid) end = endDT.toUTC().toJSDate();
       }
-    );
-    if (dt.isValid) {
-      const start = dt.toJSDate();
-      const end = DateTime.fromJSDate(start).plus({ minutes: 60 }).toJSDate();
       return { start, end };
     }
   }
 
-  return {};
+  // 例：Google 日历类：“When: Fri Aug 15, 2025 2:00 PM – 3:00 PM (UTC)”
+  md = txt.match(
+    /When:\s*([A-Za-z]{3}\s+[A-Za-z]{3}\s+\d{1,2},\s+\d{4}\s+\d{1,2}:\d{2}\s*[AP]M)\s*(?:–|-)\s*(\d{1,2}:\d{2}\s*[AP]M)(?:\s*\(([^)]+)\))?/i
+  );
+  if (md) {
+    const [, startStr, endTimeStr, tz = "UTC"] = md;
+    const startDT = DateTime.fromFormat(startStr, "EEE MMM d, yyyy h:mm a", {
+      zone: tz,
+    });
+    if (startDT.isValid) {
+      start = startDT.toUTC().toJSDate();
+      const endDT = DateTime.fromFormat(endTimeStr, "h:mm a", {
+        zone: tz,
+      }).set({
+        year: startDT.year,
+        month: startDT.month,
+        day: startDT.day,
+      });
+      if (endDT.isValid) end = endDT.toUTC().toJSDate();
+      return { start, end };
+    }
+  }
+
+  // 兜底：返回 undefined，交给上游做缺失处理
+  return { start, end };
 }
 
-function extractCoachHint(subject: string, text: string): string | null {
-  const coach1 = subject.match(/with\s+Coach([A-Za-z]+)/i);
-  if (coach1) return splitCamelCoach(`Coach${coach1[1]}`);
+/** 基于别名匹配教练 uid（优先 array-contains 命中；不行再全量拉取本地忽略大小写匹配） */
+async function findCoachIdByHint(hint: string | null): Promise<string | null> {
+  if (!hint) return null;
 
-  const coach2 = text.match(/^Who:\s*(Coach[A-Za-z]+)/im);
-  if (coach2) return splitCamelCoach(coach2[1]);
+  // 变体（有/无 Coach 前缀、带空格/无空格）
+  const variants = new Set<string>();
+  const add = (s: string) => variants.add(s);
+  add(hint);
+  add(hint.replace(/^Coach\s*/i, "").trim());
+  add(`Coach ${hint}`.trim());
+  add(hint.replace(/\s+/g, "")); // CoachAmber → Coach Amber 的反向匹配会靠下方本地匹配
 
-  const coach3 = text.match(/^Who:\s*(.+)$/im);
-  if (coach3) return splitCamelCoach(coach3[1]);
+  // 1) 尝试用 array-contains 精确命中（大小写敏感）
+  for (const v of variants) {
+    const q = await db
+      .collection("coaches")
+      .where("aliases", "array-contains", v)
+      .limit(1)
+      .get();
+    if (!q.empty) {
+      const id = q.docs[0].id;
+      console.log("[coach] hit", id, "by", v);
+      return id;
+    }
+  }
 
+  // 2) 本地忽略大小写匹配（小流量可接受）
+  const all = await db.collection("coaches").limit(500).get();
+  const target = canon(hint)
+    .replace(/^coach\s*/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  for (const d of all.docs) {
+    const aliases: string[] = (d.data() as any)?.aliases || [];
+    const normed = aliases.map((a) =>
+      canon(a)
+        .replace(/^coach\s*/, "")
+        .replace(/\s+/g, " ")
+        .trim()
+    );
+    if (normed.includes(target)) {
+      console.log("[coach] local hit", d.id, "by", hint);
+      return d.id;
+    }
+  }
+
+  console.log("[coach] not found for hint:", hint);
   return null;
 }
 
-function extractStudents(
-  subject: string,
-  text: string
-): {
-  studentName?: string;
-  studentNames?: string[];
-} {
-  const m1 = subject.match(/^(.+?)\s+has booked/i);
-  if (m1) {
-    const raw = trim(m1[1]);
-    const list = splitStudentList(raw);
-    return {
-      studentName: raw,
-      studentNames: list.length ? list : [raw],
-    };
-  }
-
-  const m2 = text.match(/has been cancelled for\s+(.+?)\.\s*$/im);
-  if (m2) {
-    const raw = trim(m2[1]);
-    const list = splitStudentList(raw);
-    return {
-      studentName: raw,
-      studentNames: list.length ? list : [raw],
-    };
-  }
-  return {};
-}
-
-/* ----------------------------- 查教练（别名匹配） ----------------------------- */
-
-async function findCoachByAlias(hint?: string | null): Promise<string | null> {
-  const raw = trim(hint);
-  if (!raw) return null;
-
-  const base = splitCamelCoach(raw);
-  const variants = new Set<string>([
-    canonName(base),
-    canonName(base.replace(/^coach\s*/i, "")),
-    canonName(base.replace(/\s+/g, "")),
-  ]);
-
-  const snap = await db.collection("coaches").get();
-  for (const doc of snap.docs) {
-    const data = doc.data() as any;
-    const pool = new Set<string>();
-
-    if (data.displayName) pool.add(canonName(data.displayName));
-    if (data.email) {
-      pool.add(canonName(data.email));
-      pool.add(canonName(String(data.email).split("@")[0]));
-    }
-
-    const arr1: string[] = Array.isArray(data.aliases) ? data.aliases : [];
-    const arr2: string[] = Array.isArray(data.aliasesLower)
-      ? data.aliasesLower
-      : arr1.map((x: string) => canonName(x));
-
-    for (const a of [...arr1, ...arr2]) {
-      const c = canonName(a);
-      pool.add(c);
-      pool.add(c.replace(/\s+/g, ""));
-    }
-
-    for (const v of variants) {
-      if (pool.has(v)) {
-        console.log("[coach] hit", doc.id, "by", v);
-        return doc.id;
-      }
-    }
-  }
-  console.log("[coach] not found for hint:", raw);
-  return null;
-}
-
-/* ----------------------------- 写入 & 取消 ----------------------------- */
-
+/** 写入/更新预约（去重策略：同一 coachId + 同一天 + 同一 start 即视作同一条） */
 async function upsertAppointment(args: {
   coachId: string;
   subject: string;
   text: string;
-  when: { start?: Date | string | null; end?: Date | string | null };
-  studentName?: string | null;
-  studentNames?: string[] | null;
+  start: Date;
+  end: Date;
+  students: { studentName?: string; studentNames?: string[] };
 }) {
-  const { coachId, subject, text, when, studentName, studentNames } = args;
+  const { coachId, subject, text, start, end, students } = args;
 
-  const startDate = toDate(when?.start);
-  const endDate = toDate(when?.end);
-  if (!startDate || !endDate)
-    throw new Error("Booking parsed but start/end missing");
-
-  const startISO = DateTime.fromJSDate(startDate).toISO();
-  const endISO = DateTime.fromJSDate(endDate).toISO();
-
+  const startISO = DateTime.fromJSDate(start).toISO()!;
+  const endISO = DateTime.fromJSDate(end).toISO()!;
   console.log("[upsert] startISO:", startISO, "endISO:", endISO);
 
-  const baseDoc = {
-    coachId,
-    title: subject ?? "Lesson",
-    start: startISO,
-    end: endISO,
-    // ✅ 模块化 Timestamp
-    startTS: Timestamp.fromDate(startDate),
-    endTS: Timestamp.fromDate(endDate),
-    extendedProps: {
-      coachId,
-      studentName: studentName ?? null,
-      studentNames: studentNames ?? null,
-      rawText: text ?? null,
-    },
-    // ✅ 模块化 FieldValue
-    updatedAt: FieldValue.serverTimestamp(),
-  };
+  const col = db.collection("appointments");
 
-  const existing = await db
-    .collection("appointments")
+  // 先看同 coach 同 start 是否已存在（避免重复）
+  const exists = await col
     .where("coachId", "==", coachId)
     .where("start", "==", startISO)
     .limit(1)
     .get();
 
-  if (!existing.empty) {
-    console.log("[upsert] found existing, merge:", existing.docs[0].id);
-    await existing.docs[0].ref.set(baseDoc, { merge: true });
-    return { id: existing.docs[0].id, deleted: false };
-  }
+  const payload = {
+    title: students.studentName ? `Lesson – ${students.studentName}` : "Lesson",
+    coachId,
+    start: startISO,
+    end: endISO,
+    startTS: Timestamp.fromDate(start),
+    endTS: Timestamp.fromDate(end),
+    extendedProps: {
+      coachId,
+      subject,
+      notes: text.slice(0, 3000),
+      ...(students.studentName ? { studentName: students.studentName } : {}),
+      ...(students.studentNames ? { studentNames: students.studentNames } : {}),
+    },
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+  };
 
-  const ref = await db.collection("appointments").add({
-    ...baseDoc,
-    createdAt: FieldValue.serverTimestamp(),
-  });
-  console.log("[upsert] created:", ref.id);
-  return { id: ref.id, deleted: false };
+  if (!exists.empty) {
+    await exists.docs[0].ref.set(payload, { merge: true });
+    return exists.docs[0].ref.id;
+  } else {
+    const docRef = await col.add(payload);
+    return docRef.id;
+  }
 }
 
+/** 严格取消：按 start（ISO 或 TS±2min）+ 学员名（支持数组）+ 可选 coach 约束 */
 async function cancelAppointmentStrict(args: {
   when: { start?: Date };
-  studentNames: string[];
-  coachUid?: string | null;
+  studentName: string;
+  coachIdHint?: string | null;
 }) {
-  const { when, studentNames, coachUid } = args;
+  const { when, studentName, coachIdHint } = args;
   if (!when.start) throw new Error("Cancel requires a start time");
 
-  const startISO = DateTime.fromJSDate(when.start).toISO();
-  const studentsCanon = studentNames.map(canonName);
-  const coachFilter = coachUid ? canonName(coachUid) : null;
+  const studentKey = canon(studentName);
+  const coachKey = coachIdHint ? canon(coachIdHint) : null;
 
   const col = db.collection("appointments");
 
-  // A) 用 ISO 等值
+  // A) 先等值匹配 ISO
+  const startISO = DateTime.fromJSDate(when.start).toISO()!;
   let snap = await col.where("start", "==", startISO).get();
   let candidates = snap.docs
     .map((d) => ({ ref: d.ref, data: d.data() as any }))
     .filter((x) => {
-      const coach = canonName(x.data.coachId);
+      const coach = canon(x.data.extendedProps?.coachId || x.data.coachId);
       const names: string[] = [];
       if (x.data.extendedProps?.studentName)
         names.push(x.data.extendedProps.studentName);
       if (x.data.studentName) names.push(x.data.studentName);
       if (Array.isArray(x.data.extendedProps?.studentNames)) {
-        names.push(...x.data.extendedProps.studentNames);
+        names.push(...(x.data.extendedProps.studentNames as string[]));
       }
-      const namesCanon = names.map(canonName);
-      const studentOK = studentsCanon.some((s) => namesCanon.includes(s));
-      const coachOK = coachFilter ? coach === coachFilter : true;
-
+      const anyMatch = names.some((n) => canon(n) === studentKey);
+      const coachOK = coachKey ? coach === coachKey : true;
       console.log("[cancel][A-check]", {
         doc: x.ref.path,
         names,
-        studentsCanon,
+        namesCanon: names.map(canon),
+        targetStudent: studentKey,
         coach,
-        coachFilter,
-        studentOK,
-        coachOK,
+        coachKey,
       });
-
-      return studentOK && coachOK;
+      return anyMatch && coachOK;
     });
 
-  // B) ±2 分钟兜底（TS 范围）
+  // B) TS 范围兜底（±2min）
   if (candidates.length === 0) {
     const start = DateTime.fromJSDate(when.start).startOf("minute");
     const minus = Timestamp.fromDate(start.minus({ minutes: 2 }).toJSDate());
@@ -351,48 +379,43 @@ async function cancelAppointmentStrict(args: {
       .where("startTS", ">=", minus)
       .where("startTS", "<=", plus)
       .get();
-
     candidates = snap.docs
       .map((d) => ({ ref: d.ref, data: d.data() as any }))
       .filter((x) => {
-        const coach = canonName(x.data.coachId);
+        const coach = canon(x.data.extendedProps?.coachId || x.data.coachId);
         const names: string[] = [];
         if (x.data.extendedProps?.studentName)
           names.push(x.data.extendedProps.studentName);
         if (x.data.studentName) names.push(x.data.studentName);
         if (Array.isArray(x.data.extendedProps?.studentNames)) {
-          names.push(...x.data.extendedProps.studentNames);
+          names.push(...(x.data.extendedProps.studentNames as string[]));
         }
-        const namesCanon = names.map(canonName);
-        const studentOK = studentsCanon.some((s) => namesCanon.includes(s));
-        const coachOK = coachFilter ? coach === coachFilter : true;
-
+        const anyMatch = names.some((n) => canon(n) === studentKey);
+        const coachOK = coachKey ? coach === coachKey : true;
         console.log("[cancel][B-check]", {
           doc: x.ref.path,
           names,
-          studentsCanon,
+          namesCanon: names.map(canon),
+          targetStudent: studentKey,
           coach,
-          coachFilter,
-          studentOK,
-          coachOK,
+          coachKey,
         });
-
-        return studentOK && coachOK;
+        return anyMatch && coachOK;
       });
   }
 
   if (candidates.length === 0) {
     throw new Error(
       "Cancel failed: no appointment matched by time & student" +
-        (coachFilter ? " & coach" : "") +
+        (coachKey ? " & coach" : "") +
         "."
     );
   }
   if (candidates.length > 1) {
     throw new Error(
       "Cancel failed: multiple appointments matched (time & student" +
-        (coachFilter ? " & coach" : "") +
-        "). Please disambiguate."
+        (coachKey ? " & coach" : "") +
+        ")."
     );
   }
 
@@ -400,167 +423,149 @@ async function cancelAppointmentStrict(args: {
   return { id: candidates[0].ref.id, deleted: true };
 }
 
-/* ----------------------------- 入口函数 ----------------------------- */
+/** ---------- 入口：HTTP Webhook ---------- */
+export const ingestEmail = onRequest({ cors: true }, async (req, res) => {
+  try {
+    console.log("[ingest] method:", req.method);
 
-export const ingestEmail = onRequest(
-  { cors: true },
-  async (req: any, res: any) => {
-    try {
-      console.log("[ingest] method:", req.method);
-      if (req.method !== "POST") {
-        return res.status(405).json({ ok: false, error: "Only POST allowed" });
-      }
-
-      const subject = trim(req.body?.subject);
-      const text = trim(req.body?.text);
-      console.log("[ingest] body:", JSON.stringify({ subject, text }));
-
-      if (!subject && !text) {
-        return res
-          .status(400)
-          .json({ ok: false, error: "Missing subject/text" });
-      }
-
-      const action = detectAction(subject, text);
-      console.log("[ingest] action:", action);
-
-      if (action === "unknown") {
-        return res.status(400).json({ ok: false, error: "Unknown email type" });
-      }
-
-      const coachHint = extractCoachHint(subject, text);
-      console.log("[ingest] coachHint:", coachHint ?? null);
-
-      const when = parseWhen(subject, text);
-      console.log("[ingest] when:", {
-        start: when.start ? DateTime.fromJSDate(when.start).toISO() : null,
-        end: when.end ? DateTime.fromJSDate(when.end).toISO() : null,
-      });
-
-      const students = extractStudents(subject, text);
-      const studentName = students.studentName;
-      const studentNames = students.studentNames ?? [];
-      console.log("[ingest] students:", { studentName, studentNames });
-
-      let coachUid: string | null = null;
-      if (coachHint) {
-        coachUid = await findCoachByAlias(coachHint);
-        console.log("[ingest] coachIdFromHint:", coachUid);
-        if (!coachUid && action !== "cancel") {
-          return res.status(400).json({
-            ok: false,
-            error: `Coach not found for hint: ${coachHint}. Add to coaches.aliases.`,
-          });
-        }
-      }
-
-      if (action === "book") {
-        if (!when.start || !when.end) {
-          return res
-            .status(400)
-            .json({ ok: false, error: "Booking parsed but start/end missing" });
-        }
-        if (!coachUid) {
-          return res.status(400).json({
-            ok: false,
-            error: "Booking requires a coach (not found in subject/text)",
-          });
-        }
-        const result = await upsertAppointment({
-          coachId: coachUid,
-          subject,
-          text,
-          when,
-          studentName: studentName ?? null,
-          studentNames: studentNames.length ? studentNames : null,
-        });
-        return res.json({
-          ok: true,
-          action: "book",
-          coachId: coachUid,
-          ...result,
-          parsed: {
-            startISO: DateTime.fromJSDate(when.start).toISO(),
-            endISO: DateTime.fromJSDate(when.end).toISO(),
-            studentName,
-            studentNames,
-          },
-        });
-      }
-
-      if (action === "cancel") {
-        if (!when.start) {
-          return res
-            .status(400)
-            .json({ ok: false, error: "Cancel requires start time" });
-        }
-        if (!studentNames.length && !studentName) {
-          return res
-            .status(400)
-            .json({ ok: false, error: "Cancel requires student name(s)" });
-        }
-        const result = await cancelAppointmentStrict({
-          when: { start: when.start },
-          studentNames: studentNames.length
-            ? studentNames
-            : studentName
-            ? [studentName]
-            : [],
-          coachUid,
-        });
-        return res.json({
-          ok: true,
-          action: "cancel",
-          coachId: coachUid ?? null,
-          ...result,
-          parsed: {
-            startISO: DateTime.fromJSDate(when.start).toISO(),
-            studentName,
-            studentNames,
-          },
-        });
-      }
-
-      if (action === "change") {
-        if (!when.start || !when.end) {
-          return res
-            .status(400)
-            .json({ ok: false, error: "Change requires new start/end" });
-        }
-        if (!coachUid) {
-          return res.status(400).json({
-            ok: false,
-            error: "Change requires a coach (not found in subject/text)",
-          });
-        }
-        const result = await upsertAppointment({
-          coachId: coachUid,
-          subject,
-          text,
-          when,
-          studentName: studentName ?? null,
-          studentNames: studentNames.length ? studentNames : null,
-        });
-        return res.json({
-          ok: true,
-          action: "change",
-          coachId: coachUid,
-          ...result,
-          parsed: {
-            startISO: DateTime.fromJSDate(when.start).toISO(),
-            endISO: DateTime.fromJSDate(when.end).toISO(),
-            studentName,
-            studentNames,
-          },
-        });
-      }
-
-      return res.status(400).json({ ok: false, error: "Unhandled action" });
-    } catch (e: any) {
-      console.error("[ingest] error:", e);
-      return res
-        .status(400)
-        .json({ ok: false, error: String(e?.message || e) });
+    // —— 签名校验（可选，但建议开启）——
+    const incomingSecret =
+      (req.headers["x-webhook-secret"] as string) ||
+      (typeof (req as any).get === "function" &&
+        (req as any).get("x-webhook-secret")) ||
+      "";
+    if (WEBHOOK_SECRET && incomingSecret !== WEBHOOK_SECRET) {
+      console.log("[ingest] bad secret");
+      res.status(401).json({ ok: false, error: "Unauthorized" });
+      return;
     }
+
+    // —— 解析 body ——（Apps Script/ Postman 都会是 JSON）
+    const raw =
+      typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
+    const subject: string = raw.subject || "";
+    const html: string = raw.html || ""; // <<< 新增：保留 html 原文
+    const text: string = raw.text || stripHtml(raw.html || "");
+    const from: string = raw.from || "";
+    const to: string = raw.to || "";
+
+    console.log("[ingest] body:", JSON.stringify({ subject, text }));
+
+    // —— 原始留痕 ——（如果失败也不影响主流程）
+    try {
+      await db.collection("email_ingest").add({
+        receivedAt: admin.firestore.FieldValue.serverTimestamp(),
+        from,
+        to,
+        subject,
+        payload: raw,
+      });
+    } catch (e) {
+      console.log("[ingest] log raw error:", e);
+    }
+
+    // —— 解析动作、时间、学员、教练 —— //
+    const action = parseAction(subject, text);
+    console.log("[ingest] action:", action);
+
+    const coachHintRaw = extractCoachHint(subject, text, html);
+    const coachHint = cleanCoachHint(coachHintRaw);
+    console.log(
+      "[ingest] coachHintRaw -> coachHint:",
+      coachHintRaw,
+      "->",
+      coachHint
+    );
+
+    const when = parseWhen(subject, text, raw.html || "");
+    console.log("[ingest] when:", {
+      start: when.start ? DateTime.fromJSDate(when.start).toISO() : null,
+      end: when.end ? DateTime.fromJSDate(when.end).toISO() : null,
+    });
+
+    const students = parseStudents(subject, text);
+    console.log("[ingest] students:", students);
+
+    const coachId = await findCoachIdByHint(coachHint);
+    console.log("[ingest] coachIdFromHint:", coachId);
+
+    if (action === "book") {
+      if (!coachId) {
+        res.status(400).json({
+          ok: false,
+          error: `Coach not found for hint: ${
+            coachHint ?? "(none)"
+          } . Add to coaches.aliases.`,
+        });
+        return;
+      }
+      if (!when.start || !when.end) {
+        res.status(400).json({
+          ok: false,
+          error: "Booking parsed but start or end missing",
+        });
+        return;
+      }
+      const id = await upsertAppointment({
+        coachId,
+        subject,
+        text,
+        start: when.start,
+        end: when.end,
+        students,
+      });
+      res.json({
+        ok: true,
+        action,
+        coachId,
+        id,
+        deleted: false,
+        parsed: {
+          startISO: DateTime.fromJSDate(when.start).toISO(),
+          endISO: DateTime.fromJSDate(when.end).toISO(),
+          ...(students.studentName
+            ? { studentName: students.studentName }
+            : {}),
+          ...(students.studentNames
+            ? { studentNames: students.studentNames }
+            : {}),
+        },
+      });
+      return;
+    }
+
+    if (action === "cancel") {
+      // 取消通常没有教练名；靠时间+学员名匹配，必要时在 subject 里手动加 Coach 也能更稳
+      if (!when.start) {
+        res
+          .status(400)
+          .json({ ok: false, error: "Cancel parsed but start time missing" });
+        return;
+      }
+      if (!students.studentName) {
+        res
+          .status(400)
+          .json({ ok: false, error: "Cancel parsed but student name missing" });
+        return;
+      }
+
+      const out = await cancelAppointmentStrict({
+        when,
+        studentName: students.studentName,
+        coachIdHint: coachHint, // 如果有就加一个更严的约束
+      });
+      res.json({ ok: true, action, coachId: coachId ?? null, ...out });
+      return;
+    }
+
+    // 改期先不做
+    res
+      .status(501)
+      .json({ ok: false, error: "Change/reschedule not implemented yet" });
+    return;
+  } catch (err: any) {
+    console.log("[ingest] error:", err);
+    res.status(500).json({ ok: false, error: String(err?.message || err) });
+    return;
   }
-);
+});
