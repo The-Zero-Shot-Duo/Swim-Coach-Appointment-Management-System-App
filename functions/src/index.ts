@@ -4,7 +4,6 @@ import type { Request, Response } from "express";
 import * as admin from "firebase-admin";
 import { DateTime } from "luxon";
 import * as crypto from "crypto";
-import stringify from "json-stable-stringify";
 
 if (!admin.apps.length) {
   admin.initializeApp();
@@ -209,19 +208,22 @@ function parseChangeDetails(text: string): {
   studentName?: string;
   start?: Date;
   end?: Date;
+  coachHint?: string;
 } {
   let studentName: string | undefined;
   let start: Date | undefined;
   let end: Date | undefined;
+  let coachHint: string | undefined;
+
   const studentMatch = text.match(/^Confirmation:\s+(.+?)’s booking/i);
   if (studentMatch?.[1]) {
     studentName = studentMatch[1].trim();
   }
   const detailsMatch = text.match(
-    /changed to\s+(\d{2}[-/]\d{2}[-/]\d{4})\s+at\s+(\d{1,2}:\d{2}\s*[AP]M)\s+to\s+(\d{1,2}:\d{2}\s*[AP]M)/i
+    /changed to\s+(\d{2}[-/]\d{2}[-/]\d{4})\s+at\s+(\d{1,2}:\d{2}\s*[AP]M)\s+to\s+(\d{1,2}:\d{2}\s*[AP]M)(?:\s+with\s+(Coach[A-Za-z\s]+))?/i
   );
   if (detailsMatch) {
-    const [, dateStr, startTimeStr, endTimeStr] = detailsMatch;
+    const [, dateStr, startTimeStr, endTimeStr, coachStr] = detailsMatch;
     const zone = "America/Los_Angeles";
     const startDT = DateTime.fromFormat(
       `${dateStr} ${startTimeStr}`,
@@ -239,8 +241,11 @@ function parseChangeDetails(text: string): {
         end = endDT.toUTC().toJSDate();
       }
     }
+    if (coachStr) {
+      coachHint = cleanCoachHint(coachStr) ?? undefined;
+    }
   }
-  return { studentName, start, end };
+  return { studentName, start, end, coachHint };
 }
 
 function parseWhen(
@@ -543,12 +548,11 @@ async function cancelAppointmentStrict(args: {
   return { id: candidates[0].ref.id, deleted: true };
 }
 
-// --- Main Webhook ---
+// --- Main Webhook (最终版) ---
 export const ingestEmail = onRequest(
-  { cors: true },
+  { cors: true, memory: "512MiB" },
   async (req: Request, res: Response): Promise<void> => {
     try {
-      console.log("[ingest] method:", req.method);
       if (!(await verifySignature(req))) {
         res
           .status(401)
@@ -562,14 +566,33 @@ export const ingestEmail = onRequest(
       const html = ((raw.html ?? "") as string) || "";
       const messageId = ((raw.messageId ?? "") as string).toString();
 
-      const col = db.collection("email_ingest");
-      const rawRef = messageId ? col.doc(messageId) : col.doc();
-      const existed = messageId ? await rawRef.get() : null;
-      if (existed?.exists && existed.data()?.status === "ok") {
-        res.status(208).json({ ok: true, duplicate: true });
+      if (!messageId) {
+        res.status(400).json({ ok: false, error: "Message-ID is missing." });
         return;
       }
-      await rawRef.set({ /* logging data */ status: "seen" }, { merge: true });
+
+      // *** 核心逻辑：在这里进行状态检查 ***
+      const ingestRef = db.collection("email_ingest").doc(messageId);
+      const ingestSnap = await ingestRef.get();
+
+      // 如果邮件已经被成功处理过，立即返回 208，告诉 Apps Script 成功，避免重发
+      if (ingestSnap.exists && ingestSnap.data()?.status === "ok") {
+        console.log(
+          `[ingest] DUPLICATE message already processed, skip: ${messageId}`
+        );
+        res.status(208).json({
+          ok: true,
+          duplicate: true,
+          reason: "Already processed successfully.",
+        });
+        return;
+      }
+
+      // 先写入一个 "processing" 状态
+      await ingestRef.set(
+        { status: "processing", receivedAt: Timestamp.now(), payload: raw },
+        { merge: true }
+      );
 
       const action = parseAction(subject, text);
       const coachHint = extractCoachHint(subject, text, html);
@@ -581,16 +604,19 @@ export const ingestEmail = onRequest(
         }, coachId: ${coachId ?? "null"}`
       );
 
+      // 统一的过期处理函数
       const completeAsExpired = async (
         why: string,
         parsed: object
       ): Promise<void> => {
-        await rawRef.set(
+        await ingestRef.set(
           { status: "ok", action: "expired", reason: why },
           { merge: true }
         );
         res.status(200).json({ ok: true, expired: true, reason: why, parsed });
       };
+
+      // --- 分支逻辑 ---
 
       if (action === "book") {
         const when = parseWhen(subject, text, html);
@@ -602,8 +628,11 @@ export const ingestEmail = onRequest(
           });
           return;
         }
-        if (!coachId || !when.start || !when.end) {
-          /* error handling */ return;
+        if (!coachId || !when.start || !when.end || !students.studentName) {
+          const error = `Book parsed with missing details.`;
+          await ingestRef.set({ status: "error", error }, { merge: true });
+          res.status(400).json({ ok: false, error });
+          return;
         }
         const id = await upsertAppointment({
           coachId,
@@ -614,7 +643,7 @@ export const ingestEmail = onRequest(
           students,
           coachHint,
         });
-        await rawRef.set(
+        await ingestRef.set(
           { status: "ok", action: "book", appointmentId: id },
           { merge: true }
         );
@@ -633,7 +662,10 @@ export const ingestEmail = onRequest(
           return;
         }
         if (!when.start || !students.studentName) {
-          /* error handling */ return;
+          const error = `Cancel parsed with missing details.`;
+          await ingestRef.set({ status: "error", error }, { merge: true });
+          res.status(400).json({ ok: false, error });
+          return;
         }
         try {
           const out = await cancelAppointmentStrict({
@@ -641,7 +673,7 @@ export const ingestEmail = onRequest(
             studentName: students.studentName,
             coachId,
           });
-          await rawRef.set(
+          await ingestRef.set(
             { status: "ok", action: "cancel", appointmentId: out.id },
             { merge: true }
           );
@@ -655,7 +687,7 @@ export const ingestEmail = onRequest(
             });
             return;
           }
-          await rawRef.set(
+          await ingestRef.set(
             { status: "error", error: String(e?.message || e) },
             { merge: true }
           );
@@ -670,37 +702,41 @@ export const ingestEmail = onRequest(
           await completeAsExpired("new start time already past", details);
           return;
         }
+
+        const changeCoachHint = details.coachHint || coachHint;
+        const changeCoachId = await findCoachIdByHint(changeCoachHint || null);
+
         if (
           !details.studentName ||
           !details.start ||
           !details.end ||
-          !coachId
+          !changeCoachId
         ) {
           const error = `Change parsed with missing details: ${JSON.stringify({
             student: !!details.studentName,
             time: !!details.start,
-            coach: !!coachId,
+            coach: !!changeCoachId,
           })}`;
-          await rawRef.set({ status: "error", error }, { merge: true });
+          await ingestRef.set({ status: "error", error }, { merge: true });
           res.status(400).json({ ok: false, error });
           return;
         }
         try {
           const out = await updateAppointment({
             studentName: details.studentName,
-            newCoachId: coachId,
+            newCoachId: changeCoachId,
             newStart: details.start,
             newEnd: details.end,
-            newCoachHint: coachHint,
+            newCoachHint: changeCoachHint,
           });
-          await rawRef.set(
+          await ingestRef.set(
             { status: "ok", action: "change", appointmentId: out.id },
             { merge: true }
           );
           res.json({ ok: true, action, ...out });
           return;
         } catch (e: any) {
-          await rawRef.set(
+          await ingestRef.set(
             { status: "error", error: String(e?.message || e) },
             { merge: true }
           );
@@ -709,22 +745,27 @@ export const ingestEmail = onRequest(
         }
       }
 
-      console.log(`[ingest] unhandled action type: ${String(action)}`);
-      await rawRef.set(
-        {
-          status: "skipped",
-          reason: `Unhandled action type: ${String(action)}`,
-        },
-        { merge: true }
-      );
-      res.status(200).json({
-        ok: true,
-        skipped: true,
-        reason: `Unhandled action: ${String(action)}`,
-      });
+      // 对于无法识别的 action 类型，跳过并标记
+      const reason = `Unhandled action type: ${String(action)}`;
+      await ingestRef.set({ status: "skipped", reason }, { merge: true });
+      res.status(200).json({ ok: true, skipped: true, reason });
       return;
     } catch (err: any) {
-      console.log("[ingest] error:", err);
+      console.error("[ingest] top-level error:", err);
+      // 如果发生顶级错误，也尝试记录到 ingestRef (如果 messageId 可用)
+      const messageId = ((req as any).body?.messageId as string)?.toString();
+      if (messageId) {
+        await db
+          .collection("email_ingest")
+          .doc(messageId)
+          .set(
+            {
+              status: "error",
+              error: "Top-level exception: " + String(err?.message || err),
+            },
+            { merge: true }
+          );
+      }
       res.status(500).json({ ok: false, error: String(err?.message || err) });
       return;
     }
