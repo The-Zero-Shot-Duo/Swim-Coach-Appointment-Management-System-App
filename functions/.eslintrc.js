@@ -27,7 +27,7 @@ module.exports = {
     "@typescript-eslint/no-unsafe-member-access": "off",
     "@typescript-eslint/no-unsafe-call": "off",
     "@typescript-eslint/no-explicit-any": "off",
-    "max-len": ["warn", { code: 120 }],
+    "max-len": ["warn", { code: 200 }],
     "@typescript-eslint/no-unused-vars": [
       "warn",
       { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
