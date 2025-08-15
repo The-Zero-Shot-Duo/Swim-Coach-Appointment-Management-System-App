@@ -35,6 +35,7 @@ function hmacHexSHA256(body: Buffer | string, secret: string): string {
 }
 
 function getHeader(req: Request, name: string): string {
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
   const v = req.headers[name.toLowerCase()] as string | string[] | undefined;
   return Array.isArray(v) ? v.join(",") : v ?? "";
 }
@@ -93,6 +94,34 @@ async function verifySignature(req: Request): Promise<boolean> {
     console.log("[ingest] signature error:", e);
     return false;
   }
+}
+
+/**
+ * 根据预约的详细信息生成结构化的笔记字符串。
+ */
+function generateStructuredNotes(details: {
+  studentName?: string;
+  courseName?: string;
+  coachName?: string;
+  start: Date;
+  end: Date;
+}): string {
+  const { studentName, courseName, coachName, start, end } = details;
+
+  // 使用 Luxon 来格式化时间，并确保时区正确
+  const zone = "America/Los_Angeles";
+  const startTime = DateTime.fromJSDate(start).setZone(zone).toFormat("f"); // e.g., August 15, 2025 at 2:15 PM PDT
+  const endTime = DateTime.fromJSDate(end).setZone(zone).toFormat("t"); // e.g., 3:00 PM
+
+  const notes = [
+    `Student: ${studentName || "N/A"}`,
+    `Lesson Type: ${courseName || "N/A"}`,
+    `Coach: ${coachName || "N/A"}`,
+    `Start Time: ${startTime}`,
+    `End Time: ${endTime}`,
+  ];
+
+  return notes.join("\n");
 }
 
 // --- Parsers ---
@@ -337,8 +366,9 @@ async function upsertAppointment(args: {
   start: Date;
   end: Date;
   students: { studentName?: string; studentNames?: string[] };
+  coachHint: string | null;
 }) {
-  const { coachId, subject, text, start, end, students } = args;
+  const { coachId, subject, text, start, end, students, coachHint } = args;
   const startISO = DateTime.fromJSDate(start).toISO();
   const endISO = DateTime.fromJSDate(end).toISO();
   if (!startISO || !endISO) throw new Error("Invalid start or end date.");
@@ -358,12 +388,22 @@ async function upsertAppointment(args: {
     extendedProps: {
       coachId,
       subject,
-      notes: text.slice(0, 3000),
+      notes: generateStructuredNotes({
+        studentName: students.studentName,
+        courseName: subject.includes("Private lesson")
+          ? "Private lesson"
+          : "Trial class", // 这是一个简单的课程类型解析，你可以根据需要扩展
+        coachName: coachHint || "N/A",
+        start: start,
+        end: end,
+      }),
       ...(students.studentName ? { studentName: students.studentName } : {}),
       ...(students.studentNames ? { studentNames: students.studentNames } : {}),
     },
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    ...(exists.empty && {
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    }),
   };
   if (!exists.empty) {
     await exists.docs[0].ref.set(payload, { merge: true });
@@ -378,8 +418,9 @@ async function updateAppointment(args: {
   newCoachId: string;
   newStart: Date;
   newEnd: Date;
+  newCoachHint: string | null;
 }) {
-  const { studentName, newCoachId, newStart, newEnd } = args;
+  const { studentName, newCoachId, newStart, newEnd, newCoachHint } = args;
   const studentKey = canon(studentName);
   const col = db.collection("appointments");
   const now = Timestamp.now();
@@ -411,6 +452,7 @@ async function updateAppointment(args: {
       `Update failed: No future appointments found for student: "${studentName}".`
     );
   const appointmentToUpdate = candidates[0];
+  const oldData = appointmentToUpdate.data;
   const startISO = DateTime.fromJSDate(newStart).toISO();
   const endISO = DateTime.fromJSDate(newEnd).toISO();
   if (!startISO || !endISO)
@@ -422,8 +464,23 @@ async function updateAppointment(args: {
     startTS: Timestamp.fromDate(newStart),
     endTS: Timestamp.fromDate(newEnd),
     "extendedProps.coachId": newCoachId,
+    "extendedProps.notes": generateStructuredNotes({
+      // 从旧数据中获取不变的信息
+      studentName: oldData.extendedProps?.studentName || oldData.studentName,
+      courseName: oldData.title?.includes("Private lesson")
+        ? "Private lesson"
+        : "Trial class",
+      // 使用新的信息
+      coachName: newCoachHint || "N/A",
+      start: newStart,
+      end: newEnd,
+    }),
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   });
+
+  console.log(
+    `[update] Appointment ${appointmentToUpdate.ref.id} updated successfully.`
+  );
   return { id: appointmentToUpdate.ref.id, updated: true };
 }
 
@@ -555,6 +612,7 @@ export const ingestEmail = onRequest(
           start: when.start,
           end: when.end,
           students,
+          coachHint,
         });
         await rawRef.set(
           { status: "ok", action: "book", appointmentId: id },
@@ -633,6 +691,7 @@ export const ingestEmail = onRequest(
             newCoachId: coachId,
             newStart: details.start,
             newEnd: details.end,
+            newCoachHint: coachHint,
           });
           await rawRef.set(
             { status: "ok", action: "change", appointmentId: out.id },
