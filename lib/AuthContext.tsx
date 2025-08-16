@@ -14,6 +14,7 @@ import { doc, setDoc, serverTimestamp, getDoc } from "firebase/firestore";
 type AuthCtx = {
   user: User | null;
   initializing: boolean;
+  profileReady: boolean;
   login: (email: string, password: string) => Promise<void>;
   register: (
     email: string,
@@ -28,6 +29,7 @@ type AuthCtx = {
 const Ctx = createContext<AuthCtx>({
   user: null,
   initializing: true,
+  profileReady: false,
   login: async () => {},
   register: async () => {},
   logout: async () => {},
@@ -73,17 +75,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
 }) => {
   const [user, setUser] = useState<User | null>(null);
   const [initializing, setInitializing] = useState(true);
+  const [profileReady, setProfileReady] = useState(false);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => {
-      console.log(
-        "AppNavigator is rendering. User authenticated:",
-        !!u,
-        "initializing:",
-        initializing
-      );
       console.log("[AuthContext] onAuthStateChanged:", u?.uid ?? "null");
       setUser(u);
+      if (u) {
+        if (u.displayName) {
+          setProfileReady(true);
+        }
+      } else {
+        setProfileReady(false);
+      }
       setInitializing(false);
     });
     return unsub;
@@ -168,7 +172,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     );
 
     await cred.user.reload();
-    if (auth.currentUser) setUser(auth.currentUser);
+    if (auth.currentUser) {
+      setUser(auth.currentUser);
+      setProfileReady(true);
+    }
 
     console.log(
       "[AuthContext][register] saved coach profile with aliases:",
@@ -185,6 +192,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       value={{
         user,
         initializing,
+        profileReady,
         login,
         register,
         logout,
