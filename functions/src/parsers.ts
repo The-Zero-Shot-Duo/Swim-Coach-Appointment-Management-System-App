@@ -111,21 +111,27 @@ export function parseChangeDetails(text: string): {
   start?: Date;
   end?: Date;
   coachHint?: string;
+  courseName?: string;
 } {
   let studentName: string | undefined;
   let start: Date | undefined;
   let end: Date | undefined;
   let coachHint: string | undefined;
+  let courseName: string | undefined;
 
   const studentMatch = text.match(/^Confirmation:\s+(.+?)’s booking/i);
   if (studentMatch?.[1]) {
     studentName = studentMatch[1].trim();
   }
   const detailsMatch = text.match(
-    /changed to\s+(\d{2}[-/]\d{2}[-/]\d{4})\s+at\s+(\d{1,2}:\d{2}\s*[AP]M)\s+to\s+(\d{1,2}:\d{2}\s*[AP]M)(?:\s+with\s+(Coach[A-Za-z\s]+))?/i
+    /booking for (.+?) changed to\s+(\d{2}[-/]\d{2}[-/]\d{4})\s+at\s+(\d{1,2}:\d{2}\s*[AP]M)\s+to\s+(\d{1,2}:\d{2}\s*[AP]M)(?:\s+with\s+(Coach[A-Za-z\s]+))?/i
   );
   if (detailsMatch) {
-    const [, dateStr, startTimeStr, endTimeStr, coachStr] = detailsMatch;
+    const [, courseStr, dateStr, startTimeStr, endTimeStr, coachStr] =
+      detailsMatch;
+
+    courseName = courseStr.trim(); // 提取并赋值
+
     const zone = "America/Los_Angeles";
     const startDT = DateTime.fromFormat(
       `${dateStr} ${startTimeStr}`,
@@ -147,7 +153,7 @@ export function parseChangeDetails(text: string): {
       coachHint = cleanCoachHint(coachStr) ?? undefined;
     }
   }
-  return { studentName, start, end, coachHint };
+  return { studentName, start, end, coachHint, courseName };
 }
 
 /**

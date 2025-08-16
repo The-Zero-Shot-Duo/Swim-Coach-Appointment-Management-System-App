@@ -11,6 +11,7 @@ export interface AppointmentData {
   title?: string;
   extendedProps?: {
     coachId?: string;
+    courseName?: string;
     studentName?: string;
     studentNames?: string[];
   };

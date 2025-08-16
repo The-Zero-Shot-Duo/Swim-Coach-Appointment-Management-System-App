@@ -119,8 +119,17 @@ export async function updateAppointment(args: {
   newStart: Date;
   newEnd: Date;
   newCoachHint: string | null;
+  newCourseName?: string;
 }): Promise<{ id: string; updated: boolean }> {
-  const { studentName, newCoachId, newStart, newEnd, newCoachHint } = args;
+  const {
+    studentName,
+    newCoachId,
+    newStart,
+    newEnd,
+    newCoachHint,
+    newCourseName,
+  } = args;
+
   const studentKey = canon(studentName);
   const col = db.collection("appointments");
 
@@ -155,18 +164,28 @@ export async function updateAppointment(args: {
   if (!startISO || !endISO)
     throw new Error("Invalid new start or end date for update.");
 
+  const finalCourseName =
+    newCourseName ||
+    oldData.extendedProps?.courseName ||
+    (oldData.title?.includes("Private lesson")
+      ? "Private lesson"
+      : "Trial class");
+  const finalTitle = `Lesson – ${
+    oldData.extendedProps?.studentName || oldData.studentName
+  }`;
+
   await appointmentToUpdate.ref.update({
     coachId: newCoachId,
     start: startISO,
     end: endISO,
     startTS: Timestamp.fromDate(newStart),
     endTS: Timestamp.fromDate(newEnd),
+    title: finalTitle,
     "extendedProps.coachId": newCoachId,
+    "extendedProps.courseName": finalCourseName,
     "extendedProps.notes": generateStructuredNotes({
       studentName: oldData.extendedProps?.studentName || oldData.studentName,
-      courseName: oldData.title?.includes("Private lesson")
-        ? "Private lesson"
-        : "Trial class",
+      courseName: finalCourseName,
       coachName: newCoachHint || "N/A",
       start: newStart,
       end: newEnd,

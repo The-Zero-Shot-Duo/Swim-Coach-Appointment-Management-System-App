@@ -197,6 +197,7 @@ export const ingestEmail = onRequest(
             newStart: details.start,
             newEnd: details.end,
             newCoachHint: changeCoachHint,
+            newCourseName: details.courseName,
           });
           await ingestRef.set(
             { status: "ok", action: "change", appointmentId: out.id },
